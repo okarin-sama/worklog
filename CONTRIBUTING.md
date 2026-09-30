@@ -91,23 +91,23 @@ Add a `CHANGELOG.md` entry under "Unreleased" in every PR.
 
 ## Releases & the Homebrew tap
 
-The source repo is private and Homebrew will not authenticate private
-*formula downloads* — so the release tarball is **vendored into the tap**
-(`okarin-sama/homebrew-tap/dist/`). One release = one tag + one tap commit:
+Both repos are public, so Homebrew installs straight from GitHub's
+auto-generated archive for the tag — nothing is vendored, and no token is
+needed to fetch it. One release = one tag here + one commit in the tap:
 
 ```bash
 # 1. bump CHANGELOG (Unreleased -> [x.y.z]) and commit
 git tag vX.Y.Z && git push origin vX.Y.Z
 
-# 2. build + hash the exact archive of that tag
-curl -sL -H "Authorization: Bearer $(gh auth token)" \
-  -o ~/repos/homebrew-tap/dist/worklog-X.Y.Z.tar.gz \
-  https://github.com/okarin-sama/worklog/archive/refs/tags/vX.Y.Z.tar.gz
-shasum -a 256 ~/repos/homebrew-tap/dist/worklog-X.Y.Z.tar.gz
+# 2. hash the public archive for that tag (no auth header needed)
+curl -sL https://github.com/okarin-sama/worklog/archive/refs/tags/vX.Y.Z.tar.gz \
+  | shasum -a 256
 
-# 3. in the tap repo: update Formula/worklog.rb (url filename, version, sha256)
-#    rm the old dist/worklog-*.tar.gz, then
-brew style Formula/worklog.rb && git add -A && git commit && git push
+# 3. in the tap repo: update the tag in Formula/worklog.rb `url` and set the new
+#    `sha256`. Do NOT add a `version` line — Homebrew derives it from the URL,
+#    and an explicit one fails `brew audit --strict` as redundant.
+brew style Formula/worklog.rb && brew audit --strict Formula/worklog.rb
+git add -A && git commit && git push
 
 # 4. verify from a clean shell:
 brew update && brew upgrade worklog && brew test worklog && worklog-run --print-map

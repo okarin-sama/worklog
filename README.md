@@ -86,11 +86,10 @@ brew info worklog              # shows setup caveats (twg, OP_TOKEN, WORKLOG_ENT
 
 This installs the commands `worklog-run`, `worklog-add`, `worklog-summary`,
 `op-sync` plus a sample at `$(brew --prefix)/share/worklog/entries.example`.
-The source repo is private, so the formula downloads the release tarball
-**vendored in the tap** (`dist/`) — Homebrew cannot authenticate private
-formula downloads, hence this pattern. The formula lives in the companion
-[homebrew-tap](https://github.com/okarin-sama/homebrew-tap) repo; the
-tag-and-vendor release flow is in CONTRIBUTING below.
+The formula installs directly from this repo's tagged source archive, so no
+tokens or git-credential setup are needed. The formula lives in the companion
+[homebrew-tap](https://github.com/okarin-sama/homebrew-tap) repo; the release
+flow is in CONTRIBUTING below.
 
 ## The four commands
 
@@ -119,7 +118,7 @@ they are personal data, not source.
 
 | Symptom | Fix |
 |---|---|
-| `twg not found on PATH or ~/.local/bin` | install/authenticate `twg` first (`twg auth`) |
+| `twg not found on PATH or ~/.local/bin` | install the public [Atlassian TWG CLI](https://developer.atlassian.com/cloud/twg-cli/getting-started/installation/): `curl -fsSL --retry 2 https://teamwork-graph.atlassian.com/cli/install \| bash`, then `twg login` + `twg setup` (verify with `twg doctor`) |
 | `need --url/--token or OP_BASE_URL/OP_TOKEN env` | export your OP credentials (phase 2 only — `--jira-only` works without them) |
 | `OpenProject rejected the token` | regenerate at `$URL/my_access_tokens` with Time & costs read/write + work packages read |
 | line re-logged unexpectedly | you edited the line text itself (duration/comment/date); fingerprints track text, not intent — or use `--force` deliberately |

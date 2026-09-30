@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-09-30
+
+### Changed
+- Relicensed from "all rights reserved" to MIT, as the previous `LICENSE` file
+  itself prescribed.
+- Example Jira project keys and site URLs in docs, comments and the smoke
+  battery are now neutral placeholders (`DEMO-421`, `jira.example.com`,
+  `op.example.com`) so the repo is safe to publish. The key parser was already
+  generic (`^[A-Z][A-Z0-9]+-[0-9]+$`), so this is a documentation-only change.
+- Docs describe the public install path: the tap installs from this repo's
+  tagged source archive, so no vendored tarball or `gh` token is involved.
+- `twg` is Atlassian's public Teamwork Graph CLI; the troubleshooting table now
+  links its real installer and `twg login` / `twg setup` / `twg doctor` flow.
+
 ## [1.0.2] - 2026-09-30
 
 ### Added
