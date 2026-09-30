@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-30
 
 ### Added
 - Work-package discovery: `op-sync --list-wps [N]` (default 25) lists OpenProject
@@ -12,6 +12,13 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no `twg`, no mapping file, credentials only. `--wp-filter STR` narrows the
   list to packages whose subject contains STR. `worklog-run --list-wps [N]
   [--wp-filter STR]` forwards the same (works even without an entries file).
+- Activity discovery: `op-sync --list-activities` prints the OpenProject
+  time-entry activities as an `ID  NAME` table — the exact values usable as the
+  `op:<wp_id>:<activity>` suffix or mapping column 3. It reuses the sync's own
+  resolution (collection endpoint, per-id probe fallback for older servers), so
+  what it lists is what `resolve_activity` can match. Credentials only: no
+  `twg`, no mapping file, no Jira read. `worklog-run --list-activities`
+  forwards the same (works even without an entries file).
 
 ### Fixed
 - `op-sync` positional `WEEKS` is now only consumed when it is actually a

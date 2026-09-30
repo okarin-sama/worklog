@@ -49,6 +49,25 @@ RUNS=$((RUNS+1)); DESC="worklog-run --list-wps without credentials fails (no ent
 DESC="worklog-run list-wps: forwarded credentials hint"; warns 'need --url/--token'
 reset
 
+# ---- 1c. activity listing (--list-activities) guards ---------------------------
+# Same contract without any OpenProject access: flag in both help texts, and
+# list mode must fail with the credentials hint only — no twg, no mapping file.
+echo "== list-activities =="
+RUNS=$((RUNS+1)); DESC="worklog-run --help lists --list-activities"
+check bash -c "'$WR' --help | grep -q -- '--list-activities'"
+RUNS=$((RUNS+1)); DESC="op-sync --help lists --list-activities"
+check bash -c "'$ROOT/op-sync.sh' --help | grep -q -- '--list-activities'"
+RUNS=$((RUNS+1)); DESC="op-sync --list-activities without credentials fails"
+env -u OP_BASE_URL -u OP_TOKEN "$ROOT/op-sync.sh" --list-activities >>"$T/out" 2>"$T/err" && bad || ok
+DESC="list-activities: credentials hint on stderr"; warns 'need --url/--token'
+DESC="list-activities: list mode never requires twg"; hasnt 'twg not found'
+DESC="list-activities: list mode never requires the mapping file"; hasnt 'mapping file not found'
+RUNS=$((RUNS+1)); DESC="worklog-run --list-activities without credentials fails (no entries file needed)"
+(cd "$T" && env -u OP_BASE_URL -u OP_TOKEN -u WORKLOG_ENTRIES "$WR" --list-activities) \
+  >>"$T/out" 2>"$T/err" && bad || ok
+DESC="worklog-run list-activities: forwarded credentials hint"; warns 'need --url/--token'
+reset
+
 # ---- 2. entry grammar + op: tag extraction -------------------------------------
 echo "== grammar / print-map =="
 cat > "$T/entries" <<'EOF'
