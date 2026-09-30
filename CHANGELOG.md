@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-09-30
+
+### Added
+- GitHub Actions CI (`macos-latest`): `bash -n` + advisory shellcheck + `ci/smoke.sh`
+  behaviour tests; the tap repo has its own `brew style` + install/`brew test` CI.
+- `ci/smoke.sh` — dependency-free test battery (help flags, entry grammar,
+  positional `op:` extraction, misplaced-tag warning, dry-run plan, sample file).
+- PR template + issue forms (bug report / feature request) under `.github/`.
+
+### Changed
+- The `twg` requirement is deferred to actual execution: `--help` and (in
+  `worklog-add`) `--dry-run` now work on machines without `twg` — required for
+  CI and friendlier error UX.
+
 ## [1.0.1] - 2026-09-30
 
 ### Fixed

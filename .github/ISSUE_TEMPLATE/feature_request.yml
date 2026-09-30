@@ -1,0 +1,21 @@
+name: Feature request
+description: Propose a new flag, phase, or quality-of-life change
+labels: enhancement
+body:
+  - type: textarea
+    attributes:
+      label: Problem this solves
+    validations: {required: true}
+  - type: textarea
+    attributes:
+      label: Proposed behaviour
+      description: Include sample `entries` lines / flags and their `--help` wording
+    validations: {required: true}
+  - type: checkboxes
+    attributes:
+      label: Invariant check
+      options:
+        - label: Re-runs stay idempotent (no double-log / double-sync)
+          required: true
+        - label: Jira stays read-only outside worklog-add, OP stays read-only outside op-sync
+          required: true

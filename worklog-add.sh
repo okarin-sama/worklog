@@ -66,10 +66,12 @@
 
 set -euo pipefail
 
-if ! command -v twg >/dev/null 2>&1; then
-  if [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
-  else echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; fi
-else TWG="twg"; fi
+# twg is located now but required only when something actually executes:
+# --help and --dry-run work without it (the CI smoke tests depend on that).
+if command -v twg >/dev/null 2>&1; then TWG="twg"
+elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
+else TWG=""; fi
+require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; }; }
 
 # Print the leading comment block (line 2 up to the first non-comment line).
 usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
@@ -265,6 +267,7 @@ for i in "${!K[@]}"; do
   echo "    \$ $TWG jira workitem worklog add --issue-id ${K[$i]} --time-spent-seconds ${X[$i]} --started '${S[$i]}' --comment '${C[$i]}' --comment-format plain $NOTIFY"
 done
 [[ $DRY -eq 1 ]] && { echo "(dry-run: nothing written)"; exit 0; }
+require_twg   # only real executions need twg — help/dry-run stay dependency-free
 
 # ---- confirm --------------------------------------------------------------------
 if [[ $ASSUME_YES -ne 1 ]]; then

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint-smoke:
+    name: syntax + shellcheck + smoke (no twg/OP needed)
+    runs-on: macos-latest        # matches the real target env (BSD tools, bash 3.2)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: brew install jq shellcheck
+
+      - name: bash -n every script
+        run: for f in *.sh ci/*.sh; do echo "-- $f"; bash -n "$f"; done
+
+      - name: shellcheck (advisory — tighten to blocking once clean)
+        continue-on-error: true
+        run: shellcheck -S warning worklog-run.sh worklog-add.sh op-sync.sh worklog-summary.sh
+
+      - name: --help works without twg
+        run: |
+          ./worklog-run.sh --help    >/dev/null
+          ./worklog-add.sh --help    >/dev/null
+          ./worklog-summary.sh --help >/dev/null
+          ./op-sync.sh --help        >/dev/null
+
+      - name: behaviour smoke (grammar, mapping, dry-run plan)
+        run: ./ci/smoke.sh

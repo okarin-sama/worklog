@@ -30,10 +30,12 @@ set -euo pipefail
 usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 
 # ---- launcher fallback -------------------------------------------------------
-if ! command -v twg >/dev/null 2>&1; then
-  if [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
-  else echo "twg not found on PATH or in ~/.local/bin" >&2; exit 1; fi
-else TWG="twg"; fi
+# twg is located now but required only when a query is about to run: --help
+# works without it (CI smoke tests depend on that).
+if command -v twg >/dev/null 2>&1; then TWG="twg"
+elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
+else TWG=""; fi
+require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or in ~/.local/bin" >&2; exit 1; }; }
 
 # ---- args --------------------------------------------------------------------
 WEEKS="${1:-1}"; if [[ $# -gt 0 ]]; then shift; fi
@@ -65,6 +67,7 @@ WINSTART="$(date -v-"${DAYS}"d +%Y-%m-%d 2>/dev/null || date -d "-${DAYS} days" 
 WINDOW_LABEL="${WEEKS} week(s) · last ${DAYS} days"
 
 # ---- pre-flight: verify twg runs and auth is alive ----------------------------
+require_twg   # everything below actually queries twg
 if ! "$TWG" --version >/dev/null 2>&1; then
   echo "ERROR: '$TWG' is not runnable. Output of '$TWG --version':" >&2
   "$TWG" --version >&2 || true

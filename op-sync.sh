@@ -41,10 +41,12 @@
 
 set -euo pipefail
 
-if ! command -v twg >/dev/null 2>&1; then
-  if [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
-  else echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; fi
-else TWG="twg"; fi
+# twg is located now but required only when the Jira read starts (even --dry-run
+# reads Jira worklogs); --help stays dependency-free for CI smoke tests.
+if command -v twg >/dev/null 2>&1; then TWG="twg"
+elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
+else TWG=""; fi
+require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; }; }
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -86,6 +88,7 @@ if ! printf '%s' "$tok_decoded" | grep -qE '^[A-Za-z0-9@._%+-]+:[A-Za-z0-9]+$'; 
 fi
 op_debug "url: $URL"
 [[ -f "$MAPPING" ]] || { echo "mapping file not found: $MAPPING (create TSV: KEY<TAB>wp_id)" >&2; exit 1; }
+require_twg   # every non-help path reads Jira
 mkdir -p "$(dirname "$STATE")"; touch "$STATE"
 for dep in jq curl; do command -v "$dep" >/dev/null 2>&1 || { echo "missing dep: $dep" >&2; exit 1; }; done
 

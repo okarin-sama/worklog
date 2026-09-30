@@ -60,11 +60,12 @@ fixed position. If you touch parsing, remember the three invariants:
 
 ```bash
 git checkout -b feat/<thing>
-# edit, then the standard checklist (all safe: no writes):
-bash -n *.sh
+# edit, then the standard checklist (all safe: no writes, no twg needed):
+bash -n *.sh ci/*.sh
+./ci/smoke.sh                                   # the full behaviour battery CI runs
 ./worklog-run.sh --help | head -5
 ./worklog-run.sh --print-map                    # positional op: tag extraction
-./worklog-run.sh --jira-only --dry-run          # phase 1 preview (needs twg auth)
+./worklog-run.sh --jira-only --dry-run          # phase 1 preview (twg auth only if logging)
 ./worklog-run.sh --op-only  --dry-run           # phase 2 preview (needs OP_BASE_URL/OP_TOKEN)
 printf 'FAKE-1 1h Today op:448:Design+(Solutioning) note\n' > /tmp/e && \
   ./worklog-add.sh --dry-run -f /tmp/e          # parser edge cases

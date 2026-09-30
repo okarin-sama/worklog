@@ -1,0 +1,24 @@
+name: Bug report
+description: Something logs, skips, or syncs incorrectly
+labels: bug
+body:
+  - type: textarea
+    attributes:
+      label: Entries lines (sanitized — fake keys welcome)
+      description: The exact `entries` lines that reproduce it
+      render: shell
+    validations: {required: true}
+  - type: textarea
+    attributes:
+      label: Command + full output
+      description: Include the `--dry-run` output first, then the real run
+      render: shell
+    validations: {required: true}
+  - type: textarea
+    attributes:
+      label: Expected vs actual
+    validations: {required: true}
+  - type: input
+    attributes:
+      label: Version
+      description: output of `brew list --versions worklog` (or `git describe --tags` in a checkout)
