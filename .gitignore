@@ -1,0 +1,9 @@
+# personal timesheet data — never commit
+entries
+op-mapping.tsv
+*.local.tsv
+
+# tooling noise
+.DS_Store
+*.bak
+tmp/

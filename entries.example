@@ -1,0 +1,28 @@
+# entries — the ONE worklog file. Append lines anytime, then run:  worklog-run --yes
+#   (logs untracked lines to Jira AND mirrors op:-tagged keys to OpenProject)
+# Copy this file to ~/.config/worklog/entries (or name it ./entries in your
+# working folder) and start logging. NEVER commit your real entries file —
+# it is personal timesheet data and is .gitignored by default.
+#
+#   format: KEY DURATION [DATE] op:<wp_id>[:<activity>] COMMENT
+#     COMMENT is ALWAYS the last part of the line; the op: tag sits right
+#     before it, after the duration and optional date.
+#
+#     no op: tag           -> Jira only
+#     op:<wp_id>           -> also mirrored to that OpenProject work package
+#     op:<wp_id>:<activity>-> OP activity by name ('+' = space) or numeric id;
+#                             omit -> OP server default
+#     DURATION  3h | 90m | 1h30m | 1h 30m | 0.5d | 2w      (day = 8h, week = 40h)
+#     DATE      Today | Yesterday | YYYY-MM-DD | full ISO timestamp
+#     KEY       bare key (DEMO-421) or any Jira link containing one
+#
+# OpenProject activity ids differ per instance — check your OP Time & costs
+# dropdown or GET /api/v3/time_entries/activities.
+#
+# --- examples ----------------------------------------------------------------
+#   DEMO-421 1h Today op:65:Support #data architecture
+#   SAMPLE-10516 2h Yesterday op:448:Testing UAT round 2
+#   INFRA-5321 30m                              today 09:00, generic comment
+#   DEMO-435 1h 51m 2026-09-18 op:73 Test (sit) regression pass
+#   https://jira.example.com/browse/DEMO-421 45m op:65 review feedback
+# --- your entries below ------------------------------------------------------

@@ -1,0 +1,10 @@
+Copyright (c) 2026 John Robert Ilarde
+All rights reserved.
+
+This is internal worklog tooling. No public license is granted: you may use and
+modify it for personal or internal team purposes if you have access to this
+repository; redistribution outside that scope is not permitted.
+
+If this project is ever open-sourced, replace this file with a standard SPDX
+license (MIT is the usual choice for CLI tooling of this size) and update the
+`license` field in the homebrew-tap formula accordingly.
