@@ -2,8 +2,10 @@
 # ci/smoke.sh — dependency-free behaviour tests for the worklog toolkit.
 # Runs WITHOUT twg or OpenProject credentials: exercises --help, the entry
 # grammar parser, positional op: tag extraction (--print-map), the misplaced-tag
-# warning, and the phase-1 dry-run plan. Used by GitHub CI and the local dev
-# loop (see CONTRIBUTING.md). Exits non-zero when any check fails.
+# warning, the phase-1 dry-run plan, and — through a stub `twg` on PATH — the
+# issue links the summary report renders (needs jq, so that block self-skips).
+# Used by GitHub CI and the local dev loop (see CONTRIBUTING.md). Exits non-zero
+# when any check fails.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -117,6 +119,118 @@ DESC="entries.example parses (--print-map exit 0)"
 WORKLOG_ENTRIES="$ROOT/entries.example" "$WR" --print-map >>"$T/out" 2>"$T/err" \
   && ok || bad
 DESC="example: header-only file -> no mapped rows"; hasnt '^[A-Z][A-Z0-9]+-[0-9]+[[:space:]]'
+
+# ---- 5. worklog-summary issue links (fake twg, no credentials) -----------------
+# The evidence table must link to the URL Jira returned, not to a hardcoded site.
+# A stub `twg` on PATH lets the whole report path run offline. Skipped without jq
+# (the summary needs it anyway, so there is nothing to test in that environment).
+echo "== summary issue links =="
+if command -v jq >/dev/null 2>&1; then
+BIN="$T/bin"; mkdir -p "$BIN"
+cat > "$BIN/twg" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && { echo "twg-fake 0.0.0"; exit 0; }
+case "${1:-} ${2:-}" in
+  "work query")    cat "$FAKE_TWG_WQ" ;;
+  "jira workitem") [[ "${3:-}" == "get" ]] && cat "$FAKE_TWG_GI" || cat "$FAKE_TWG_WL" ;;
+  *)               echo '{"data":[]}' ;;
+esac
+SH
+chmod +x "$BIN/twg"
+
+# Two issues + one dated worklog, served by the stub for every scenario below.
+cat > "$T/wl.json" <<'EOF'
+{"data":[{"id":1,"started":"2026-09-28T09:00:00.000+0800","timeSpentSeconds":3600},
+         {"id":2,"started":"2020-01-02T09:00:00.000+0800","timeSpentSeconds":600}]}
+EOF
+export FAKE_TWG_WQ="$T/wq.json" FAKE_TWG_GI="$T/gi.json" FAKE_TWG_WL="$T/wl.json"
+
+wq_json() { # $1 = url|none|empty -> $FAKE_TWG_WQ
+  if [[ "$1" == url ]]; then
+    cat > "$FAKE_TWG_WQ" <<'EOF'
+{"data":{"counts":{"sections":{"issues":{"matched":2}}},"items":{"sections":{
+ "issues":[{"key":"DEMO-421","summary":"Alpha","webUrl":"https://jira.test.example/browse/DEMO-421"},
+           {"key":"DEMO-435","summary":"Beta","webUrl":"https://jira.test.example/browse/DEMO-435?focusedCommentId=99"}],
+ "comments":[],"pages":[],"pullRequests":[],"reviewedPullRequests":[]}}}}
+EOF
+  elif [[ "$1" == empty ]]; then
+    cat > "$FAKE_TWG_WQ" <<'EOF'
+{"data":{"counts":{"sections":{"issues":{"matched":0}}},"items":{"sections":{
+ "issues":[],"comments":[],"pages":[],"pullRequests":[],"reviewedPullRequests":[]}}}}
+EOF
+  else
+    cat > "$FAKE_TWG_WQ" <<'EOF'
+{"data":{"counts":{"sections":{"issues":{"matched":2}}},"items":{"sections":{
+ "issues":[{"key":"DEMO-421","summary":"Alpha"},{"key":"DEMO-435","summary":"Beta"}],
+ "comments":[],"pages":[],"pullRequests":[],"reviewedPullRequests":[]}}}}
+EOF
+  fi
+}
+gi_json() { # $1 = url|none, $2 = request.site ("" to omit) -> $FAKE_TWG_GI
+  local u421="" u435="" site=""
+  if [[ "$1" == url ]]; then
+    u421='"url":"https://jira.test.example/browse/DEMO-421",'
+    u435='"url":"https://jira.test.example/browse/DEMO-435",'
+  fi
+  [[ -n "$2" ]] && site="\"site\":\"$2\","
+  cat > "$FAKE_TWG_GI" <<EOF
+{"request":{${site}"issueIdOrKey":["DEMO-421","DEMO-435"]},"data":{"items":[
+ {"ok":true,"data":{"key":"DEMO-421","summary":"Alpha","status":{"name":"In Progress"},
+  "timespent":4200,"created":"2026-09-01","updated":"2026-09-29","resolutiondate":"",${u421}"x":1}},
+ {"ok":true,"data":{"key":"DEMO-435","summary":"Beta","status":{"name":"Waiting for approval"},
+  "timespent":0,"created":"2026-09-02","updated":"2026-09-28","resolutiondate":"",${u435}"x":1}}]}}
+EOF
+}
+
+run_summary() { # $1=wq-mode $2=gi-mode $3=request.site $4=TWG_SITE_URL ("" = unset)
+  reset
+  wq_json "$1"; gi_json "$2" "$3"
+  if [[ -n "$4" ]]; then
+    PATH="$BIN:$PATH" TWG_SITE_URL="$4" "$ROOT/worklog-summary.sh" 1 >>"$T/out" 2>"$T/err"
+  else
+    PATH="$BIN:$PATH" env -u TWG_SITE_URL -u JIRA_SITE_URL \
+      "$ROOT/worklog-summary.sh" 1 >>"$T/out" 2>"$T/err"
+  fi
+}
+
+RUNS=$((RUNS+1)); DESC="summary(fake): links use the payload webUrl"
+run_summary url url "jira.test.example" "" && ok || bad
+DESC="links: real URL rendered";                     has '\[DEMO-421\]\(https://jira\.test\.example/browse/DEMO-421\)'
+DESC="links: no placeholder host in report";         hasnt 'jira\.example\.com'
+DESC="links: site base attributed to the data";      has 'Jira site:\*\* https://jira\.test\.example'
+
+RUNS=$((RUNS+1)); DESC="summary(fake): TWG_SITE_URL forces every link"
+run_summary url url "jira.test.example" "https://proxy.test.example/jira" && ok || bad
+DESC="override: links rebuilt from TWG_SITE_URL";    has '\[DEMO-421\]\(https://proxy\.test\.example/jira/browse/DEMO-421\)'
+DESC="override: payload URL not used";               hasnt 'jira\.test\.example/browse/DEMO-421'
+DESC="override: note names the env var";             has 'TWG_SITE_URL'
+
+RUNS=$((RUNS+1)); DESC="summary(fake): graph webUrl used when hydration carries none"
+run_summary url none "jira.test.example" "" && ok || bad
+DESC="graph link: rendered for both rows";           has '\[DEMO-421\]\(https://jira\.test\.example/browse/DEMO-421\)'
+DESC="graph link: query string stripped";            has '\[DEMO-435\]\(https://jira\.test\.example/browse/DEMO-435\)'
+DESC="graph link: no query survives";                hasnt 'focusedCommentId=99\)'
+
+RUNS=$((RUNS+1)); DESC="summary(fake): request.site fallback when no URL came back"
+run_summary none none "jira.internal.test" "" && ok || bad
+DESC="fallback: link synthesized from request.site"; has '\[DEMO-435\]\(https://jira\.internal\.test/browse/DEMO-435\)'
+DESC="fallback: no placeholder warning";             hasnt 'could not be resolved'
+
+RUNS=$((RUNS+1)); DESC="summary(fake): placeholder + warning when data says nothing"
+run_summary none none "" "" && ok || bad
+DESC="placeholder: link uses the neutral default";   has '\[DEMO-421\]\(https://jira\.example\.com/browse/DEMO-421\)'
+DESC="placeholder: report warns about it";           has 'could not be resolved from any payload'
+
+RUNS=$((RUNS+1)); DESC="summary(fake): zero issues still renders a report"
+run_summary empty url "jira.test.example" "" && ok || bad
+DESC="empty: report rendered without a table";      has 'No Jira issues matched'
+DESC="empty: no link claim for nothing";            hasnt 'Issue links point at'
+DESC="empty: unresolved site base is flagged";      has 'could not be resolved from any payload'
+
+reset
+else
+  echo "  skip jq not installed"
+fi
 
 echo ""
 echo "== smoke: $RUNS checks, $FAILS failed =="

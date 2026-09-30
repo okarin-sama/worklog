@@ -20,13 +20,25 @@
 #   -o FILE          Also write the markdown report to FILE
 #   --help           Show this help
 #
+# Environment:
+#   TWG_SITE_URL     Force this base for EVERY issue link, instead of the URL each
+#                    Jira item returns (use it when your browser-facing host differs
+#                    from the one the API reports). Unset: links come from the
+#                    payloads, and the base for the rare row without one is read
+#                    back from the data (never a hardcoded site).
+#
 # What it does (all read-only):
 #   1. twg work query        -> ranked activity across Jira/PR/docs/comments
-#   2. twg jira workitem get -> batched status + lifetime time-tracking fields
+#   2. twg jira workitem get -> batched status + lifetime time-tracking fields + web URL
 #   3. twg jira workitem worklog query -> lifetime worklog entries, kept per date
 #   4. Renders a prose standup summary + a markdown evidence table that automatically
 #      grows one column per date that has a log entry (today / yesterday / any day so
 #      far) — no flag needed.
+#
+# Issue links: every row links to the URL Jira itself returned for that issue (the
+# workitem payload's `url`, else the graph item's `webUrl`), never a guess. The site
+# base used for the rare issue with no URL in any payload is resolved the same way
+# (env TWG_SITE_URL -> URL seen in the data -> request.site -> placeholder).
 
 set -euo pipefail
 
@@ -48,7 +60,12 @@ case "$WEEKS" in -h|--help) usage; exit 0;; esac
 SCOPE="me"; IDENT=(); ITEMS=100; MAXKEYS=15; OUT=""
 ORDER="recency"; HYDRATE_CAP=200   # ceiling on batched `workitem get`, not on report rows
 DATE_COLS=10; WL_PAGE=200
-SITE_URL="${TWG_SITE_URL:-https://jira.example.com}"   # override via env for other sites
+# SITE_URL is only the base used to *synthesize* a link for an issue that carried no
+# URL in any payload — the table normally links with the URL Jira returned (see step
+# 2b). Resolution order: TWG_SITE_URL env -> URL observed in the data -> the site the
+# payload was fetched from -> neutral placeholder (and the report says so).
+SITE_URL="${TWG_SITE_URL:-}"
+SITE_FALLBACK="https://jira.example.com"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --identifier)   SCOPE="user"; IDENT+=(--identifier "$2"); shift 2;;
@@ -155,7 +172,7 @@ GI=""
 if [[ -n "$KEYS" ]]; then
   echo ">>> jira workitem get (batch: $(printf '%s\n' "$KEYS" | wc -w | tr -d ' ') issues) ..." >&2
   # shellcheck disable=SC2086
-  GI="$(run_twg jira workitem get $KEYS --fields summary,status,timespent,timeoriginalestimate,created,updated,resolutiondate)"
+  GI="$(run_twg jira workitem get $KEYS --fields summary,status,timespent,timeoriginalestimate,created,updated,resolutiondate,weburl)"
 fi
 
 # issue key -> tab-separated: summary, status, lifetime timespent s, created, updated, completed
@@ -178,6 +195,58 @@ if [[ -n "$GI" && -f "$GI" ]]; then
         ((.resolutiondate // "") | tostring | split("T")[0]) ]
     | @tsv' "$GI" > "$ISSUE_META" 2>/dev/null || true
 fi
+
+# ---- 2b'. issue key -> the URL Jira actually returned ------------------------
+# Both payloads carry a real browser link: `workitem get` answers with `.url`
+# (requested via the `weburl` field), the graph with `.webUrl`. Those are what the
+# report links to, so the site never has to be guessed. Hydration wins over the
+# graph (it is the live REST projection); `?focusedCommentId=…`-style suffixes are
+# stripped so a row points at the issue, not at one comment inside it.
+LINKS="/tmp/wlg.links.$$.tsv"   # issue \t https url
+{
+  if [[ -n "$GI" && -f "$GI" ]]; then
+    jq -r '
+      ( if (.data | type) == "array" then (.data[] | select(type == "object"))
+        elif (.data | type) == "object" and ((.data.items | type) == "array")
+          then (.data.items[] | select(.ok) | .data)
+        else empty end )
+      | select((.key // "") != "" and ((.url // .webUrl // "") | tostring | test("^https?://")))
+      | [ .key, ((.url // .webUrl) | tostring | sub("[?#].*$"; "")) ] | @tsv' "$GI" 2>/dev/null
+  fi
+  jq -r '
+    .data.items.sections.issues[]?
+    | select((.key // "") != "" and ((.webUrl // "") | tostring | test("^https?://")))
+    | [ .key, (.webUrl | tostring | sub("[?#].*$"; "")) ] | @tsv' "$WQ" 2>/dev/null
+} | awk -F'\t' 'NF >= 2 && $2 ~ /^https?:\/\// && !seen[$1]++' > "$LINKS" || true
+
+# Site base: TWG_SITE_URL wins and is applied to *every* link (it is the way to point
+# the report at a host the payloads do not report, e.g. an SSO/proxy front door).
+# Otherwise the base is read back from the data — an observed link, then the site the
+# hydration was served from — and the neutral placeholder is only the last resort for
+# rows whose payload carried no URL at all.
+SITE_FORCED=0
+if [[ -n "$SITE_URL" ]]; then
+  SITE_FORCED=1
+else
+  SITE_URL="$(awk -F'\t' 'NR == 1 { print $2 }' "$LINKS" 2>/dev/null \
+              | sed -nE 's|^(https?://[^/]+).*|\1|p')"
+fi
+if [[ -z "$SITE_URL" && -n "$GI" && -f "$GI" ]]; then
+  SITE_URL="$(jq -r '.request.site // empty' "$GI" 2>/dev/null | head -1)"
+  [[ -n "$SITE_URL" ]] && SITE_URL="https://${SITE_URL%%/*}"
+fi
+if [[ -z "$SITE_URL" ]]; then
+  SITE_URL="$SITE_FALLBACK"; SITE_URL_KIND="placeholder"
+else
+  [[ "$SITE_URL" == *"://"* ]] || SITE_URL="https://${SITE_URL}"
+  SITE_URL="${SITE_URL%/}"
+  SITE_URL_KIND="$([[ "$SITE_FORCED" == 1 ]] && echo override || echo resolved)"
+fi
+case "$SITE_URL_KIND" in
+  override)    SITE_TAG=' _(from `TWG_SITE_URL`, applied to every link)_' ;;
+  placeholder) SITE_TAG=' ⚠️ _(could not be resolved from any payload — set `TWG_SITE_URL`)_' ;;
+  *)           SITE_TAG=' _(read back from the queried Jira items)_' ;;
+esac
 
 # ---- 2c. order rows + apply the --max-issues cut -----------------------------
 # Now that every candidate carries a real `updated` timestamp, the cut keeps the
@@ -202,6 +271,26 @@ elif [[ -n "$KEYS" ]]; then
   KEYS="$(printf '%s\n' "$KEYS" | head -n "$MAXKEYS")"
 fi
 NRETAINED="$(awk 'END { print NR + 0 }' "$ISSUE_META")"
+# How many rendered rows carry Jira's own URL (the rest use the synthesized fallback).
+NLINKED=0
+if [[ -s "$ISSUE_META" && "$SITE_FORCED" == 0 ]]; then
+  NLINKED="$(awk -F'\t' -v lfile="$LINKS" '
+    BEGIN { while ((getline ln < lfile) > 0) { split(ln, a, "\t"); if (a[1] != "") lk[a[1]] = 1 } close(lfile) }
+    ($1 in lk) { c++ } END { print c + 0 }' "$ISSUE_META")"
+fi
+NFALLBACK=$(( NRETAINED - NLINKED ))
+if [[ "$SITE_FORCED" == 1 ]]; then
+  LINK_NOTE="Issue links were built from \`TWG_SITE_URL\` (\`${SITE_URL}/browse/<KEY>\`) for all ${NRETAINED} row(s)"
+else
+  LINK_NOTE="Issue links point at the URL each item's own payload returned (\`url\` / \`webUrl\`)"
+  if (( NFALLBACK > 0 )); then
+    LINK_NOTE+=", with ${NFALLBACK} row(s) synthesized as \`${SITE_URL}/browse/<KEY>\` because no URL came back for them"
+  fi
+fi
+if [[ "$SITE_URL_KIND" == "placeholder" ]]; then
+  LINK_NOTE+=" — ⚠️ the site base could not be resolved from any payload, so synthesized links are placeholders: set \`TWG_SITE_URL\`"
+fi
+LINK_NOTE+="."
 if [[ "$ORDER" == "alpha" ]]; then
   ORDER_NOTE="Rows ordered by issue key (A-Z)"
 else
@@ -292,6 +381,7 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   echo "## 📖 Standup summary"
   echo ""
   echo "- **Activity in window:** ${COUNTS}"
+  echo "- **Jira site:** ${SITE_URL}${SITE_TAG}"
   echo "- **Issue rows:** ${ORDER_NOTE}"
   echo "- **Time logged (Jira worklogs, in window):** $(fmt_dur "$TOTAL_SECS") across ${NTRACKED} tracked issue(s)."
   if (( NDATES > 0 )); then
@@ -315,7 +405,7 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   echo ""
   if [[ -s "$ISSUE_META" ]]; then
     # One extra column per dated worklog entry (oldest dates collapse into "Earlier").
-    awk -F'\t' -v site="$SITE_URL" -v dfile="$DATELIST" -v efile="$WL_ENTRIES" -v ws="$WINSTART" '
+    awk -F'\t' -v site="$SITE_URL" -v forced="$SITE_FORCED" -v lfile="$LINKS" -v dfile="$DATELIST" -v efile="$WL_ENTRIES" -v ws="$WINSTART" '
       function dur(s,   h, m) {            # compact cell form: 3h / 20m / 3h 20m
         s = int(s)
         if (s <= 0) return "-"
@@ -327,6 +417,10 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
       function hhmm(s) { s = int(s); return int(s / 3600) "h " sprintf("%02dm", int((s % 3600) / 60)) }
       BEGIN {
         nd = 0
+        # per-issue link exactly as Jira returned it (key \t url); rows without one
+        # fall back to <site>/browse/<KEY> so the table can never render dead text.
+        while ((getline ln < lfile) > 0) { split(ln, a, "\t"); if (a[1] != "" && a[2] != "") lk[a[1]] = a[2] }
+        close(lfile)
         while ((getline ln < dfile) > 0) { split(ln, a, "\t"); nd++; dd[nd] = a[1]; dl[nd] = a[2]; ds[nd] = a[3] + 0 }
         close(dfile)
         while ((getline ln < efile) > 0) {
@@ -354,7 +448,9 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
         marker = ""
         if (tolower(st) ~ /waiting|approv|review|blocked/) marker = " ⚠️"
         alllife += life
-        row = "| [" k "](" site "/browse/" k ") | " summ " | " st marker " | "
+        link = (forced == 1 || !(k in lk)) ? site "/browse/" k : lk[k]
+        gsub(/ /, "%20", link); gsub(/\|/, "%7C", link)   # keep the markdown cell intact
+        row = "| [" k "](" link ") | " summ " | " st marker " | "
         row = row ($5 == "" ? "-" : $5) " | " ($6 == "" ? "-" : $6) " | " ($7 == "" ? "-" : $7) " | "
         row = row hhmm(win[k]) " | " hhmm(life) " |"
         for (j = 1; j <= nc; j++) row = row " " (colhide[j] ? dur(early[k]) : dur(cell[k, colsrc[j]])) " |"
@@ -396,6 +492,7 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   if (( NCAND > NRETAINED )); then
     echo "- ⚠️ **Row cut:** only the ${NRETAINED} most recently updated of ${NCAND} issues are shown (and worklogs are fetched for those only), so totals here understate the window. Raise \`--max-issues\` to ${NCAND} (or add \`--order alpha\` for A-Z rows) for complete totals."
   fi
+  if [[ -s "$ISSUE_META" ]]; then echo "- ${LINK_NOTE}"; fi
   echo "- 'Logged (all-time)' is Jira native \`timespent\`; Tempo or other timers are not included."
   echo "- Dated columns come from each worklog entry's \`started\` timestamp, so an entry added today or yesterday lands in its own column."
   if (( DATE_COLS > 0 )); then
@@ -407,5 +504,5 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
 
 cat "$REPORT"
 if [[ -n "$OUT" ]]; then cp "$REPORT" "$OUT"; echo ">> report written to $OUT" >&2; fi
-rm -f "$ISSUE_META" "$WL_ENTRIES" "$DATES_ALL" "$DATELIST" "$REPORT"
+rm -f "$ISSUE_META" "$LINKS" "$WL_ENTRIES" "$DATES_ALL" "$DATELIST" "$REPORT"
 

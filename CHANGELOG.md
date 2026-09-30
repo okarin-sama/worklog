@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-30
+
+### Fixed
+- `worklog-summary` issue links no longer depend on a hardcoded site. Every row now
+  links to the URL Jira itself returned for that issue — `url` from the batched
+  `workitem get` (newly requested via the `weburl` field), falling back to the graph
+  item's `webUrl`, with any `?focusedCommentId=…` suffix stripped so the link points at
+  the issue. Previously the report synthesized `https://jira.example.com/browse/<KEY>`
+  from a placeholder default, so links were wrong unless you happened to set
+  `TWG_SITE_URL`.
+- The site base is resolved from the data instead of assumed: observed issue link →
+  the hydration payload's `request.site` → the neutral placeholder, and the report
+  says which one it used. `TWG_SITE_URL` still wins and is now documented as forcing
+  that base for *every* link (for browser-facing hosts the API does not report).
+
+### Added
+- Standup bullet **Jira site** and a *Confidence & coverage* bullet describing exactly
+  where each row's link came from, plus a ⚠️ warning when no payload carried a site and
+  synthesized links therefore fall back to the placeholder.
+- `ci/smoke.sh` section 5 drives `worklog-summary` against a stub `twg` and asserts all
+  four link paths (payload `url`, graph `webUrl`, `request.site` fallback, placeholder +
+  warning) and the `TWG_SITE_URL` override.
+
 ## [1.2.0] - 2026-09-30
 
 ### Added
