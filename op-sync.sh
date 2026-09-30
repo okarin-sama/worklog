@@ -29,6 +29,11 @@
 #                   the mapping file. Needs credentials only: no twg, no
 #                   mapping file, no Jira read.
 #   --wp-filter STR With --list-wps: only packages whose subject contains STR
+#   --list-activities
+#                   List OpenProject time-entry activities (numeric id + exact
+#                   name — the values usable as op:<wp_id>:<activity> or in
+#                   mapping column 3) and exit. Needs credentials only: no twg,
+#                   no mapping file, no Jira read.
 #   -h, --help      Show this help
 #
 # Debugging: OP_DEBUG=1 logs the target URL and per-entry failures; the API
@@ -53,7 +58,7 @@ elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
 else TWG=""; fi
 require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; }; }
 
-usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Never echo the token: it is a credential and this script's stdout gets pasted
 # into tickets/logs. Set OP_DEBUG=1 for verbose diagnostics on stderr.
@@ -70,7 +75,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MAPPING="$HERE/op-mapping.tsv"
 STATE="${OP_SYNC_STATE:-$HOME/.config/op-sync/synced.log}"
 AUTO=0; DRY=0; AUTHOR=""; TESTYLE="${OP_TE_STYLE:-auto}"
-LISTWPS=0; LISTN=25; WPFILT=""
+LISTWPS=0; LISTN=25; WPFILT=""; LISTACTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)         URL="$2"; shift 2;;
@@ -83,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --list-wps)    LISTWPS=1
                    if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
     --wp-filter)   WPFILT="$2"; shift 2;;
+    --list-activities) LISTACTS=1; shift;;
     -h|--help)     usage; exit 0;;
     *)             echo "unknown option: $1" >&2; exit 1;;
   esac
@@ -99,7 +105,7 @@ if ! printf '%s' "$tok_decoded" | grep -qE '^[A-Za-z0-9@._%+-]+:[A-Za-z0-9]+$'; 
 fi
 op_debug "url: $URL"
 for dep in jq curl; do command -v "$dep" >/dev/null 2>&1 || { echo "missing dep: $dep" >&2; exit 1; }; done
-if [[ $LISTWPS -eq 0 ]]; then
+if [[ $LISTWPS -eq 0 && $LISTACTS -eq 0 ]]; then
   [[ -f "$MAPPING" ]] || { echo "mapping file not found: $MAPPING (create TSV: KEY<TAB>wp_id)" >&2; exit 1; }
   require_twg   # every non-help, non-list path reads Jira
   mkdir -p "$(dirname "$STATE")"; touch "$STATE"
@@ -274,6 +280,24 @@ if [[ $LISTWPS -eq 1 ]]; then
     echo "  Use a WP_ID in entries lines:  KEY 1h Today op:<WP_ID>[:<activity>]  (see worklog-run --help)"
   fi
   rm -f "$ROWS"
+  exit 0
+fi
+
+# ---- list mode: browse OP activities to pick names/ids for op: tags ------------
+# Reuses fetch_activities: collection endpoint first, per-id probe fallback for
+# older servers. Both paths hit the same endpoints the sync itself uses, so what
+# this lists is exactly what resolve_activity can match.
+if [[ $LISTACTS -eq 1 ]]; then
+  fetch_activities
+  ELTS="$(printf '%s' "$ACTIVITIES_JSON" | jq -c '((._embedded.elements // []) + (.elements // []))' 2>/dev/null || echo '[]')"
+  if [[ "$ELTS" == "[]" ]]; then
+    echo "  ✗ could not list activities: the server exposed neither /time_entries/activities nor /activities (check the token's time_entries read scope)" >&2
+    exit 2
+  fi
+  echo "== OpenProject time-entry activities — use the exact name ('+' = space) or the numeric id =="
+  { printf 'ID\tNAME\n'; printf '%s' "$ELTS" | jq -r '.[] | [(.id|tostring), (.name // "")] | @tsv'; } | column -t -s $'\t'
+  echo ""
+  echo "  Use one in entries lines:  KEY 1h Today op:<WP_ID>[:<Activity+Name>]  (see worklog-run --help)"
   exit 0
 fi
 

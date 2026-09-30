@@ -50,6 +50,10 @@
 #   --list-wps [N]   list OpenProject work packages (ids to use in op: tags)
 #                    and exit — no entries file needed (forwarded to op-sync)
 #   --wp-filter STR  with --list-wps: only WPs whose subject contains STR
+#   --list-activities
+#                    list OpenProject time-entry activities (the names/ids for
+#                    the op:<wp_id>:<activity> suffix) and exit — no entries
+#                    file needed (forwarded to op-sync)
 #   --url URL        override OP_BASE_URL       (forwarded to op-sync.sh)
 #   --token TOK      override OP_TOKEN          (forwarded to op-sync.sh)
 #   -h, --help       show this help
@@ -77,7 +81,7 @@ usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
 FILE="${WORKLOG_ENTRIES:-}"; WEEKS=1
 DRY=0; YES=0; FORCE=0; JIRA_ONLY=0; OP_ONLY=0; PRINT_MAP=0
 AUTOLOOK=0; AUTHOR=""; OPURL=""; OPTOK=""
-LISTWPS=0; LISTN=""; WPFILT=""
+LISTWPS=0; LISTN=""; WPFILT=""; LISTACTS=0
 ADD_EXTRA=()          # options forwarded verbatim to worklog-add.sh
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -96,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --list-wps)     LISTWPS=1
                     if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
     --wp-filter)    WPFILT="$2"; shift 2;;
+    --list-activities) LISTACTS=1; shift;;
     --url)          OPURL="$2"; shift 2;;
     --token)        OPTOK="$2"; shift 2;;
     -h|--help)      usage; exit 0;;
@@ -114,6 +119,17 @@ if [[ $LISTWPS -eq 1 ]]; then
   [[ -n "$WPFILT" ]] && S+=(--wp-filter "$WPFILT")
   [[ -n "$OPURL"  ]] && S+=(--url "$OPURL")
   [[ -n "$OPTOK"  ]] && S+=(--token "$OPTOK")
+  exec "$SYNC_BIN" "${S[@]}"
+fi
+
+# ---- list mode: browse OpenProject activities, then exit -----------------------
+# Same contract as --list-wps: runs before entries-file resolution and forwards
+# the credential flags; needs no twg, no mapping, no Jira read.
+if [[ $LISTACTS -eq 1 ]]; then
+  SYNC_BIN="$(locate_tool op-sync.sh)" || exit 1
+  S=(--list-activities)
+  [[ -n "$OPURL" ]] && S+=(--url "$OPURL")
+  [[ -n "$OPTOK" ]] && S+=(--token "$OPTOK")
   exec "$SYNC_BIN" "${S[@]}"
 fi
 

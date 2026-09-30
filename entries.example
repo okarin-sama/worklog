@@ -16,8 +16,8 @@
 #     DATE      Today | Yesterday | YYYY-MM-DD | full ISO timestamp
 #     KEY       bare key (DEMO-421) or any Jira link containing one
 #
-# OpenProject activity ids differ per instance — check your OP Time & costs
-# dropdown or GET /api/v3/time_entries/activities.
+# OpenProject activity ids differ per instance — list yours with
+# `op-sync --list-activities` (or check the OP Time & costs dropdown).
 #
 # --- examples ----------------------------------------------------------------
 #   DEMO-421 1h Today op:65:Support #data architecture

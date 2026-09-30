@@ -95,9 +95,9 @@ flow is in CONTRIBUTING below.
 
 | Command | Role | Handy flags |
 |---|---|---|
-| `worklog-run` | driver: Jira + OpenProject in one go | `--dry-run` `--yes` `--jira-only` `--op-only` `--weeks N` `--print-map` `--list-wps [N]` |
+| `worklog-run` | driver: Jira + OpenProject in one go | `--dry-run` `--yes` `--jira-only` `--op-only` `--weeks N` `--print-map` `--list-wps [N]` `--list-activities` |
 | `worklog-add` | logs entries to Jira only (via twg) | `-f FILE` `--at` `--tz` `--state` `--force` `--notify-false` |
-| `op-sync` | mirrors recent Jira worklogs of mapped keys to OpenProject | `WEEKS` `--mapping FILE` `--author EMAIL` `--auto-lookup` `--api-style auto\|modern\|legacy` `--list-wps [N]` |
+| `op-sync` | mirrors recent Jira worklogs of mapped keys to OpenProject | `WEEKS` `--mapping FILE` `--author EMAIL` `--auto-lookup` `--api-style auto\|modern\|legacy` `--list-wps [N]` `--list-activities` |
 | `worklog-summary` | markdown standup/status report from twg | see `--help` |
 
 Need a WP id for your `op:` tag? Browse OpenProject work packages directly:
@@ -108,6 +108,16 @@ worklog-run --list-wps 50 --wp-filter "data flow"   # or: op-sync --list-wps 50
 
 Prints a `WP_ID  SUBJECT` table (needs `OP_BASE_URL`/`OP_TOKEN`; no entries
 file or `twg` required).
+
+Want to set the activity on an `op:` tag? List the activities your instance
+actually offers:
+
+```
+worklog-run --list-activities                      # or: op-sync --list-activities
+```
+
+Prints an `ID  NAME` table — use the name with `+` for spaces
+(`op:448:Design+(Solutioning)`) or the numeric id (`op:448:4`).
 
 Debugging OpenProject sync: `OP_DEBUG=1 worklog-run --op-only` (logs URLs and
 per-entry failures; the token is never echoed).
