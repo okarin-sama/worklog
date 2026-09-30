@@ -46,6 +46,13 @@
 #   --state FILE     Jira tracking state file  (forwarded to worklog-add.sh)
 #   --notify-false   suppress Jira notifications (forwarded to worklog-add.sh)
 #   --author EMAIL   only sync this OP author   (forwarded to op-sync.sh)
+#   --comment-detail MODE
+#                    OpenProject comment style: full (default) = ticket summary
+#                    + description snippet + who/when/how long + the Jira
+#                    worklog note; brief = same without the description line;
+#                    plain = the machine one-liner (marker + Jira link)
+#   --comment-max N  characters per comment line before clipping (default 220)
+#                    (both forwarded to op-sync.sh)
 #   --auto-lookup    resolve unmapped WP ids by OP subject search (op-sync.sh)
 #   --list-wps [N]   list OpenProject work packages (ids to use in op: tags)
 #                    and exit — no entries file needed (forwarded to op-sync)
@@ -80,7 +87,7 @@ usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
 
 FILE="${WORKLOG_ENTRIES:-}"; WEEKS=1
 DRY=0; YES=0; FORCE=0; JIRA_ONLY=0; OP_ONLY=0; PRINT_MAP=0
-AUTOLOOK=0; AUTHOR=""; OPURL=""; OPTOK=""
+AUTOLOOK=0; AUTHOR=""; OPURL=""; OPTOK=""; CMTDETAIL=""; CMTMAX=""
 LISTWPS=0; LISTN=""; WPFILT=""; LISTACTS=0
 ADD_EXTRA=()          # options forwarded verbatim to worklog-add.sh
 while [[ $# -gt 0 ]]; do
@@ -96,6 +103,8 @@ while [[ $# -gt 0 ]]; do
     --at|--tz|--state) ADD_EXTRA+=("$1" "$2"); shift 2;;
     --notify-false) ADD_EXTRA+=("$1"); shift;;
     --author)       AUTHOR="$2"; shift 2;;
+    --comment-detail) CMTDETAIL="$2"; shift 2;;
+    --comment-max)    CMTMAX="$2"; shift 2;;
     --auto-lookup)  AUTOLOOK=1; shift;;
     --list-wps)     LISTWPS=1
                     if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
@@ -219,6 +228,8 @@ if [[ $JIRA_ONLY -eq 0 ]]; then
     [[ $DRY      -eq 1 ]] && S+=(--dry-run)
     [[ $AUTOLOOK -eq 1 ]] && S+=(--auto-lookup)
     [[ -n "$AUTHOR" ]] && S+=(--author "$AUTHOR")
+    [[ -n "$CMTDETAIL" ]] && S+=(--comment-detail "$CMTDETAIL")
+    [[ -n "$CMTMAX" ]] && S+=(--comment-max "$CMTMAX")
     [[ -n "$OPURL"  ]] && S+=(--url "$OPURL")
     [[ -n "$OPTOK"  ]] && S+=(--token "$OPTOK")
     set +e

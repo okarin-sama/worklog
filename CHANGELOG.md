@@ -4,6 +4,53 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-01
+
+### Added
+- **Readable OpenProject comments.** `op-sync` no longer writes a machine id as
+  the time-entry comment. Every mirrored entry now spells out the work:
+
+  ```
+  DEMO-421 · Data architecture review for the payments service
+  - Ticket: Align the reporting pipeline with the new event schema before the Q4 cut …
+  - Logged: 2h 10m on 2026-09-30 by Ada Lovelace
+  - Worklog: #data rewrote the child ticket descriptions in plain English
+  - Jira: https://jira.example.com/browse/DEMO-421
+  sync:jira-worklog-73799
+  ```
+
+  The ticket summary and description are a best-effort enrich: one batched
+  `twg jira workitem get --fields summary,description` per run supplies them for
+  every mapped key, and both Atlassian Document Format fields (the description
+  and the worklog note) are flattened to prose. If that read fails you get
+  `⚠ ticket context unavailable` on stderr and key-only comments — the sync
+  itself never stops, and neither dedupe nor tracing change.
+- `op-sync --comment-detail full|brief|plain` (env `OP_COMMENT_DETAIL`): `full`
+  is the block above, `brief` drops the ticket-description line, `plain` writes
+  the previous one-liner and skips the ticket read entirely.
+  `op-sync --comment-max N` (env `OP_COMMENT_MAX`, default 220) clips each text
+  line with an ellipsis so a wall-of-text ticket cannot swamp the entry.
+  `worklog-run` forwards both to phase 2.
+- The planned `--dry-run` output now prints the comment the way it will read
+  inside OpenProject (the payload escapes its newlines), and the `✓` line shows
+  the worklog note instead of an ISO duration — so a run is scannable without
+  opening the OP UI.
+- `ci/smoke.sh` section 6 drives the whole phase-2 read path offline: a stub
+  `twg` answers the worklog query (ADF note) and the ticket-context query, a
+  stub `curl` answers the OpenProject REST calls, and the exact planned payload
+  is asserted for all three detail modes, the clip length, the degradation path
+  and both ticket-response shapes.
+
+### Fixed
+- The batched ticket read assumed `.data.items[]` always exists. A one-key
+  `workitem get` answers with a **bare `.data[]` array**, which made `jq` abort
+  on indexing an array with `items`: any mapping with exactly one key would have
+  degraded every comment with no clue why. Both response shapes are now
+  normalised, and the shape is pinned by a smoke check.
+- `usage()` in `op-sync` printed a hardcoded `sed -n '2,50p'` range, so any new
+  option silently fell off the end of `--help`. It now reads the header block up
+  to the first non-comment line, like the other scripts.
+
 ## [1.2.1] - 2026-09-30
 
 ### Fixed

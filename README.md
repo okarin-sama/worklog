@@ -97,7 +97,7 @@ flow is in CONTRIBUTING below.
 |---|---|---|
 | `worklog-run` | driver: Jira + OpenProject in one go | `--dry-run` `--yes` `--jira-only` `--op-only` `--weeks N` `--print-map` `--list-wps [N]` `--list-activities` |
 | `worklog-add` | logs entries to Jira only (via twg) | `-f FILE` `--at` `--tz` `--state` `--force` `--notify-false` |
-| `op-sync` | mirrors recent Jira worklogs of mapped keys to OpenProject | `WEEKS` `--mapping FILE` `--author EMAIL` `--auto-lookup` `--api-style auto\|modern\|legacy` `--list-wps [N]` `--list-activities` |
+| `op-sync` | mirrors recent Jira worklogs of mapped keys to OpenProject, with a readable comment | `WEEKS` `--mapping FILE` `--author EMAIL` `--auto-lookup` `--api-style auto\|modern\|legacy` `--comment-detail full\|brief\|plain` `--comment-max N` `--list-wps [N]` `--list-activities` |
 | `worklog-summary` | markdown standup/status report from twg | see `--help` |
 
 Need a WP id for your `op:` tag? Browse OpenProject work packages directly:
@@ -122,6 +122,34 @@ Prints an `ID  NAME` table — use the name with `+` for spaces
 Debugging OpenProject sync: `OP_DEBUG=1 worklog-run --op-only` (logs URLs and
 per-entry failures; the token is never echoed).
 
+## What the OpenProject entry says
+
+Each mirrored time entry gets a comment a human can read, built from the Jira
+ticket and the worklog itself — not just an id:
+
+```
+DEMO-421 · Data architecture review for the payments service
+- Ticket: Align the reporting pipeline with the new event schema before the Q4 cut …
+- Logged: 2h 10m on 2026-09-30 by Ada Lovelace
+- Worklog: #data rewrote the child ticket descriptions in plain English
+- Jira: https://jira.example.com/browse/DEMO-421
+sync:jira-worklog-73799
+```
+
+| Want | Do |
+|---|---|
+| the ticket-description line dropped | `worklog-run --op-only --comment-detail brief` |
+| the old machine one-liner back | `--comment-detail plain` (also skips the extra ticket read) |
+| shorter/longer text per line | `--comment-max N` (default 220, clipped with `…`) |
+| no Jira ticket read at all | `--comment-detail plain` |
+
+The `sync:jira-worklog-<ID>` marker and the full Jira link are kept in every
+mode, so a mirrored entry can always be traced back to the worklog it came from.
+The summary/description arrive in Atlassian Document Format and are flattened to
+prose; that context costs exactly one batched `twg jira workitem get` per run and
+is best-effort — if it fails you get a `⚠ ticket context unavailable` line and
+key-only comments, never a failed sync.
+
 ## Repo layout
 
 ```
@@ -143,6 +171,7 @@ they are personal data, not source.
 | line re-logged unexpectedly | you edited the line text itself (duration/comment/date); fingerprints track text, not intent — or use `--force` deliberately |
 | `! misplaced op: tag` warning | move the `op:` token to right after the date, BEFORE the comment |
 | `activity 'X' not found in OpenProject` | use the exact OP activity name (`+` for spaces) or its numeric id; falls back to server default |
+| `⚠ ticket context unavailable` | the readable comment lost the ticket summary/description: check `twg auth` (or pass `--comment-detail plain` to skip that read) |
 
 ## Contributing & releases
 

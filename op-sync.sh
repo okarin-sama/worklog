@@ -24,6 +24,17 @@
 #                   OP >=13) or 'legacy' (hours/spentOn, OP <=12).
 #                   Default: auto — read /time_entries/schema and pick one.
 #                   Override with env OP_TE_STYLE=modern|legacy.
+#   --comment-detail MODE
+#                   What the OpenProject time-entry comment says:
+#                   full (default) ticket summary + a description snippet +
+#                          how long / when / who + the Jira worklog note,
+#                          ending with the sync marker and the Jira link
+#                   brief  the same, minus the ticket-description line
+#                   plain  the machine one-liner (marker + link only)
+#                   Env default: OP_COMMENT_DETAIL=full|brief|plain
+#   --comment-max N Characters per text line of the comment before it is
+#                   clipped with an ellipsis (default 220).
+#                   Env default: OP_COMMENT_MAX. Ignored by 'plain'.
 #   --list-wps [N]  List OpenProject work packages (up to N, default 25,
 #                   sorted by id) and exit — use the ids in op: tags or in
 #                   the mapping file. Needs credentials only: no twg, no
@@ -39,15 +50,21 @@
 # Debugging: OP_DEBUG=1 logs the target URL and per-entry failures; the API
 # token is never echoed.
 #
-# Idempotency: every created entry carries "sync:jira-worklog-<ID>" plus the
-# full Jira issue link (https://<site>/browse/<KEY>) in its comment, and synced
-# IDs are appended to STATE_FILE (default ~/.config/op-sync/synced.log) so
-# re-runs skip already-synced entries.
+# Idempotency: synced IDs are appended to STATE_FILE (default
+# ~/.config/op-sync/synced.log) so re-runs skip already-synced entries, and
+# every created entry keeps carrying "sync:jira-worklog-<ID>" plus the full Jira
+# issue link (https://<site>/browse/<KEY>). Those two stay in the comment in
+# EVERY --comment-detail mode — in the readable default they are simply the
+# last lines — so a human can read the entry and a script can still trace it.
 #
 # Jira link base: taken from the twg payload's request.site, or override with
 # env TWG_SITE_URL / JIRA_SITE_URL (e.g. https://jira.example.com).
 #
-# Jira side is READ-ONLY (twg worklog query). Writes go only to OpenProject.
+# Jira side is READ-ONLY: the per-key worklog query, plus ONE batched
+# `twg jira workitem get --fields summary,description` per run whose result
+# feeds the readable comments. That context read is best-effort: if it fails the
+# sync still runs and the comments fall back to key + worklog note.
+# Writes go only to OpenProject.
 
 set -euo pipefail
 
@@ -58,7 +75,9 @@ elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
 else TWG=""; fi
 require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; }; }
 
-usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header IS the help. It is printed up to the first non-comment line, so
+# adding an option never means renumbering a hardcoded sed range.
+usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
 
 # Never echo the token: it is a credential and this script's stdout gets pasted
 # into tickets/logs. Set OP_DEBUG=1 for verbose diagnostics on stderr.
@@ -75,6 +94,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MAPPING="$HERE/op-mapping.tsv"
 STATE="${OP_SYNC_STATE:-$HOME/.config/op-sync/synced.log}"
 AUTO=0; DRY=0; AUTHOR=""; TESTYLE="${OP_TE_STYLE:-auto}"
+CMTDETAIL="${OP_COMMENT_DETAIL:-full}"; CMTMAX="${OP_COMMENT_MAX:-220}"
 LISTWPS=0; LISTN=25; WPFILT=""; LISTACTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +104,8 @@ while [[ $# -gt 0 ]]; do
     --auto-lookup) AUTO=1; shift;;
     --author)      AUTHOR="$2"; shift 2;;
     --api-style)   TESTYLE="$2"; shift 2;;
+    --comment-detail) CMTDETAIL="$2"; shift 2;;
+    --comment-max)    CMTMAX="$2"; shift 2;;
     --dry-run)     DRY=1; shift;;
     --list-wps)    LISTWPS=1
                    if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
@@ -96,6 +118,9 @@ done
 URL="${URL%/}"
 [[ -n "$URL" && -n "$TOK" ]] || { echo "need --url/--token or OP_BASE_URL/OP_TOKEN env" >&2; exit 1; }
 case "$TESTYLE" in auto|modern|legacy) ;; *) echo "--api-style must be auto|modern|legacy (got '$TESTYLE')" >&2; exit 1;; esac
+case "$CMTDETAIL" in full|brief|plain) ;; *) echo "--comment-detail must be full|brief|plain (got '$CMTDETAIL')" >&2; exit 1;; esac
+[[ "$CMTMAX" =~ ^[0-9]+$ && "$CMTMAX" -ge 40 ]] \
+  || { echo "--comment-max must be an integer >= 40 (got '$CMTMAX')" >&2; exit 1; }
 # Accept either a raw API token or an already-encoded Basic credential
 # (base64 of "user:token"). OpenProject ignores the username, so "apikey:" works.
 tok_decoded="$(printf '%s' "$TOK" | base64 -d 2>/dev/null || true)"
@@ -233,6 +258,99 @@ resolve_activity() { # $1=jira key -> echo activity id or empty
   printf '%s' "$id"
 }
 
+# ---- human-readable OpenProject comments ---------------------------------------
+# The comment used to be a machine id — "sync:jira-worklog-42 —
+# https://<site>/browse/KEY" — which told anyone reading OpenProject nothing
+# about the work itself. It now spells the entry out (ticket, what was done, how
+# long, who logged it) and keeps the sync marker + Jira link as its last lines,
+# so tracing stays intact while the entry becomes readable in the OP UI.
+#
+# Jira answers both the worklog note and the issue description in Atlassian
+# Document Format, so every text field is flattened to prose before it is used.
+
+hum_dur() { # seconds -> "1h 30m": what a person writes, not the API's PT1H30M
+  local s=$1 h m out=""
+  h=$((s / 3600)); m=$(((s % 3600) / 60))
+  [[ $h -gt 0 ]] && out="${h}h"
+  [[ $m -gt 0 ]] && out="${out:+$out }${m}m"
+  [[ -z "$out" ]] && out="${s}s"
+  printf '%s' "$out"
+}
+
+clip() { # $1=text $2=max chars -> one line, squeezed, clipped with an ellipsis
+  local t n=${2:-$CMTMAX}
+  t="$(printf '%s' "${1:-}" | tr -s '[:space:]' ' ' | sed -E 's/^ //; s/ $//')"
+  if (( ${#t} > n )); then printf '%s…' "${t:0:$((n - 1))}"; else printf '%s' "$t"; fi
+}
+
+# One batched ticket read per run feeds every key. `workitem get` answers with
+# .data.items[].data for a batch but a bare .data[] for one key, so both shapes
+# are normalised here into KEY<TAB>summary<TAB>description lines (ADF flattened).
+# Best-effort by design: a failed read downgrades the comments, never the sync.
+BRIEFS="$(mktemp /tmp/ops.brief.XXXXXX)"
+fetch_briefs() { # $@ = jira keys; no-op in plain mode, when cached, or on error
+  [[ "$CMTDETAIL" == "plain" || $# -eq 0 ]] && return 0
+  [[ -s "$BRIEFS" ]] && return 0
+  local raw
+  raw="$(run_twg jira workitem get "$@" --fields summary,description)" \
+    || { echo "  ⚠ ticket context unavailable (twg jira workitem get failed) — comments fall back to key + worklog note" >&2; return 0; }
+  jq -r 'def flat: if type == "string" then .
+                  else ([.. | objects | select(.type == "text") | .text] | join(" ")) end;
+         def tidy: gsub("[[:space:]]+"; " ") | sub("^ "; "") | sub(" $"; "");
+         # .data is an ARRAY of items for a one-key answer and an OBJECT with
+         # .items for a batch, so branch on the type — indexing .items on an
+         # array would make jq abort the whole program, not just that row.
+         def rows: (.data
+                    | if type == "object" then (.items // [])
+                      elif type == "array" then .
+                      else [] end);
+         rows[] | (.data // .) | select(.key != null)
+         | [ .key, ((.summary // "") | flat | tidy), ((.description // "") | flat | tidy) ]
+         | @tsv' "$raw" > "$BRIEFS" 2>/dev/null || true
+  if [[ ! -s "$BRIEFS" ]]; then
+    echo "  ⚠ ticket context came back unreadable — comments fall back to key + worklog note" >&2
+    op_debug "brief payload: $(head -c 200 "$raw" 2>/dev/null)"
+  else
+    op_debug "ticket context for $(wc -l < "$BRIEFS" | tr -d ' ') key(s)"
+  fi
+}
+
+brief_field() { # $1=key $2=col (2=summary, 3=description) -> ticket text or empty
+  awk -F'\t' -v k="$1" -v c="$2" '$1==k{print $c; exit}' "$BRIEFS"
+}
+
+worklog_text() { # $1=entries file $2=index -> that worklog's Jira note as prose
+  jq -r --argjson i "$2" 'def flat: if type == "string" then .
+                                    else ([.. | objects | select(.type == "text") | .text] | join(" ")) end;
+       ((.data[$i].comment // .data[$i].body // "")
+        | if . == null then "" else flat end
+        | gsub("[[:space:]]+"; " ") | sub("^ "; "") | sub(" $"; ""))' "$1" 2>/dev/null || true
+}
+
+# te_comment — the OpenProject time-entry comment body.
+# $1=key $2=worklog id $3=jira base $4=secs $5=started $6=note $7=author
+# $8=ticket summary $9=ticket description
+te_comment() {
+  local key=$1 wid=$2 jbase=$3 secs=$4 started=$5 note=$6 author=$7 summ=$8 desc=$9
+  local link="$jbase/browse/$key"
+  if [[ "$CMTDETAIL" == "plain" ]]; then
+    printf 'sync:jira-worklog-%s — %s (op-sync)' "$wid" "$link"
+    return 0
+  fi
+  # No markdown emphasis anywhere: '-' bullets render in both the Markdown and
+  # the Textile OpenProject defaults, and the block stays readable raw.
+  local when
+  when="Logged: $(hum_dur "$secs") on ${started%%T*}"
+  [[ -n "$author" ]] && when="$when by $author"
+  printf '%s' "$key"
+  [[ -n "$summ" ]] && printf ' · %s' "$(clip "$summ" 90)"
+  [[ "$CMTDETAIL" == "full" && -n "$desc" ]] && printf '\n- Ticket: %s' "$(clip "$desc")"
+  printf '\n- %s' "$when"
+  if [[ -n "$note" ]]; then printf '\n- Worklog: %s' "$(clip "$note")"
+  else printf '\n- Worklog: (the Jira worklog has no note)'; fi
+  printf '\n- Jira: %s\nsync:jira-worklog-%s' "$link" "$wid"
+}
+
 # ---- preflight: validate token once so we don't fail every POST with 401 -----
 ME="$(op_get "/users/me")"
 op_debug "GET /users/me -> $(printf '%s' "$ME" | jq -c '{_type, id, login}' 2>/dev/null || printf '%.200s' "$ME")"
@@ -357,6 +475,11 @@ SYNCED=0; SKIP=0; FAIL=0; NOMAP=()
 SEEN=0; EMPTY=0; READFAIL=0; BADJSON=0; NKEYS=0
 KEYS="$(awk -F'[ \t]+' 'NF>=2 && $1 ~ /^[A-Z][A-Z0-9]+-[0-9]+$/ {print $1}' "$MAPPING" | sort -u)"
 echo "== OpenProject sync — last ${DAYS} days → $URL (dry-run: $([[ $DRY -eq 1 ]] && echo yes || echo NO)) =="
+if [[ "$CMTDETAIL" != "plain" ]]; then
+  echo "  OP comment style: $CMTDETAIL (≤$CMTMAX chars/line) — ticket context from one batched workitem read" >&2
+  KEYA=(); read -ra KEYA <<<"$KEYS"        # splitting the key list is the point here
+  fetch_briefs ${KEYA[@]+"${KEYA[@]}"}
+fi
 [[ -n "$KEYS" ]] || echo "  ! no Jira keys in $MAPPING — add rows as 'DEMO-123<TAB><wp_id>' (placeholders '?' are scanned but cannot map)" >&2
 for key in $KEYS; do
   NKEYS=$((NKEYS+1))
@@ -390,17 +513,25 @@ for key in $KEYS; do
   fi
   [[ -n "$JBASE" ]] || JBASE="https://jira.example.com"
   JBASE="${JBASE%/}"; [[ "$JBASE" == *"://"* ]] || JBASE="https://$JBASE"
+  # Ticket context for every entry of this key (empty when the brief read failed).
+  SUMM="$(brief_field "$key" 2)"
+  DESC="$(brief_field "$key" 3)"
   KSYNC=0; KDUP=0
   for i in $(seq 0 $((N-1))); do
     WID=$(jq -r --argjson i "$i" '.data[$i].id // empty' "$ENTRIES")
     SECS=$(jq -r --argjson i "$i" '.data[$i].timeSpentSeconds // 0' "$ENTRIES")
     ST=$(jq -r --argjson i "$i" '.data[$i].started // .data[$i].created // empty' "$ENTRIES")
+    NOTE=$(worklog_text "$ENTRIES" "$i")
+    WAUTH=$(jq -r --argjson i "$i" '.data[$i].author.displayName // .data[$i].author.emailAddress // empty' "$ENTRIES")
     [[ -z "$WID" || -z "$ST" || "$SECS" -eq 0 ]] && { SKIP=$((SKIP+1)); continue; }
     if grep -qxF "$key/$WID" "$STATE" 2>/dev/null; then SKIP=$((SKIP+1)); KDUP=$((KDUP+1)); continue; fi
-    CMT="sync:jira-worklog-$WID — $JBASE/browse/$key (op-sync)"
+    CMT="$(te_comment "$key" "$WID" "$JBASE" "$SECS" "$ST" "$NOTE" "$WAUTH" "$SUMM" "$DESC")"
     BODY="$(te_body "$TESTYLE" "$SECS" "$ST" "$CMT" "$WP" "$ACT")"
     if [[ $DRY -eq 1 ]]; then
       echo "  [dry] POST /time_entries <- $BODY"
+      # The payload escapes the newlines, so also show the comment the way it
+      # will read inside OpenProject.
+      printf '  [dry] comment:\n'; printf '%s\n' "$CMT" | sed 's/^/        | /'
       continue
     fi
     CODE=""; JOUT=""; ATTEMPT=0
@@ -419,7 +550,8 @@ for key in $KEYS; do
       break
     done
     if [[ "$CODE" =~ ^20[01]$ && "$TYPEERR" != "Error" ]]; then
-      echo "  ✓ $key $(pt_dur "$SECS") @ $ST -> WP $WP${ACT:+ activity $ACT} (op id: $(printf '%s' "$JOUT" | jq -r '.id // "?"' 2>/dev/null))"
+      PREVIEW="$(clip "$NOTE" 60)"; [[ -n "$PREVIEW" ]] || PREVIEW="(no Jira note)"
+      echo "  ✓ $key $(hum_dur "$SECS") @ $ST -> WP $WP${ACT:+ activity $ACT} (op id: $(printf '%s' "$JOUT" | jq -r '.id // "?"' 2>/dev/null)) — $PREVIEW"
       printf '%s/%s\n' "$key" "$WID" >> "$STATE"; SYNCED=$((SYNCED+1)); KSYNC=$((KSYNC+1))
     else
       DETAIL="${DETAIL:-$(printf '%s' "$JOUT" | jq -r '.message // ""' 2>/dev/null)}"

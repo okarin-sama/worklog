@@ -3,7 +3,9 @@
 # Runs WITHOUT twg or OpenProject credentials: exercises --help, the entry
 # grammar parser, positional op: tag extraction (--print-map), the misplaced-tag
 # warning, the phase-1 dry-run plan, and — through a stub `twg` on PATH — the
-# issue links the summary report renders (needs jq, so that block self-skips).
+# issue links the summary report renders and the human-readable OpenProject
+# time-entry comment op-sync builds (a stub `curl` answers the OP REST calls
+# there). Both stubbed sections need jq, so they self-skip without it.
 # Used by GitHub CI and the local dev loop (see CONTRIBUTING.md). Exits non-zero
 # when any check fails.
 
@@ -232,7 +234,258 @@ else
   echo "  skip jq not installed"
 fi
 
+# ---- 6. op-sync human-readable OpenProject comments (fake twg + fake curl) -----
+# The time-entry comment used to be a machine id that nobody could read in
+# OpenProject. This drives the whole phase-2 read path offline: a stub `twg`
+# answers the worklog query (note in Atlassian Document Format, exactly like the
+# real API) and the ticket-context query, and a stub `curl` answers the
+# OpenProject REST calls — so the exact planned POST payload is asserted with
+# --dry-run against no Jira site and no OpenProject instance. Needs jq, so it
+# self-skips where jq is missing.
+echo "== op-sync comment readability =="
+if command -v jq >/dev/null 2>&1; then
+BIN2="$T/bin2"; mkdir -p "$BIN2"
+cat > "$BIN2/twg" <<'SH'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && { echo "twg-fake 0.0.0"; exit 0; }
+case "${1:-} ${2:-} ${3:-}" in
+  "jira workitem get")     [[ "${FAKE_GI_FAIL:-}" == "1" ]] && exit 1
+                           if [[ "${FAKE_GI_SHAPE:-batch}" == single ]]; then cat "$FAKE_TWG_GI1"
+                           else cat "$FAKE_TWG_GI2"; fi ;;
+  "jira workitem worklog") cat "$FAKE_TWG_WL2" ;;
+  *)                       echo '{"data":[]}' ;;
+esac
+SH
+# Answers every OpenProject endpoint the sync touches, and prints the status
+# code on the last line the way `curl -w '\n%{http_code}'` does.
+cat > "$BIN2/curl" <<'SH'
+#!/usr/bin/env bash
+url=""
+for a in "$@"; do case "$a" in http*) url="$a";; esac; done
+case "$url" in
+  */api/v3/users/me*)            printf '{"_type":"User","id":1,"login":"sync-bot"}\n200' ;;
+  */api/v3/time_entries/schema*) printf '{"_type":"Schema","properties":{"workedAt":{},"duration":{}}}\n200' ;;
+  */api/v3/time_entries*)        printf '{"_type":"TimeEntry","id":999}\n201' ;;
+  *)                             printf '{"_type":"Collection","_embedded":{"elements":[]}}\n200' ;;
+esac
+SH
+chmod +x "$BIN2/twg" "$BIN2/curl"
+
+# One unsynced worklog (1h 30m on 2026-09-29) whose note, plus the ticket
+# summary/description, all arrive in Atlassian Document Format.
+cat > "$T/wl2.json" <<'EOF'
+{
+ "request": {
+  "site": "jira.test.example"
+ },
+ "data": [
+  {
+   "id": "73681",
+   "started": "2026-09-29T09:00:00.000+0800",
+   "timeSpentSeconds": 5400,
+   "author": {
+    "displayName": "Ada Lovelace",
+    "emailAddress": "ada@example.com"
+   },
+   "comment": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "#demo mapped the report findings to the child tickets"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}
+EOF
+cat > "$T/gi2.json" <<'EOF'
+{
+ "request": {
+  "site": "jira.test.example",
+  "issueIdOrKey": [
+   "DEMO-421",
+   "DEMO-422"
+  ]
+ },
+ "data": {
+  "items": [
+   {
+    "input": "DEMO-421",
+    "ok": true,
+    "data": {
+     "key": "DEMO-421",
+     "summary": "Alpha  data  pipeline rollout",
+     "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+       {
+        "type": "heading",
+        "attrs": {
+         "level": 1
+        },
+        "content": [
+         {
+          "type": "text",
+          "text": "Scope of Work"
+         }
+        ]
+       },
+       {
+        "type": "paragraph",
+        "content": [
+         {
+          "type": "text",
+          "text": "the targets are the staging endpoints "
+         },
+         {
+          "type": "text",
+          "text": "and were tested during business hours only"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   },
+   {
+    "input": "DEMO-422",
+    "ok": false
+   }
+  ]
+ }
+}
+EOF
+# A one-key `workitem get` answers with a BARE .data array instead of
+# .data.items — indexing .items on an array aborts jq, which used to drop the
+# whole ticket context whenever the mapping held exactly one key.
+cat > "$T/gi1.json" <<'EOF'
+{
+ "request": {
+  "site": "jira.test.example",
+  "issueIdOrKey": "DEMO-421"
+ },
+ "data": [
+  {
+   "key": "DEMO-421",
+   "summary": "Alpha  data  pipeline rollout",
+   "description": {
+    "type": "doc",
+    "version": 1,
+    "content": [
+     {
+      "type": "paragraph",
+      "content": [
+       {
+        "type": "text",
+        "text": "the targets are the staging endpoints"
+       },
+       {
+        "type": "text",
+        "text": " and were tested during business hours only"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}
+EOF
+printf 'DEMO-421\t448\n' > "$T/map.tsv"
+export FAKE_TWG_WL2="$T/wl2.json" FAKE_TWG_GI2="$T/gi2.json" FAKE_TWG_GI1="$T/gi1.json"
+
+# opsync_run <gi-shape> [op-sync options] — the shape switch is set on the
+# COMMAND, never before a function call (bash would keep it for later tests).
+opsync_run() {
+  local shape="$1"; shift
+  reset
+  PATH="$BIN2:$PATH" FAKE_GI_SHAPE="$shape" OP_SYNC_STATE="$T/opstate.log" \
+    "$ROOT/op-sync.sh" 1 --url http://op.invalid --token FAKE --mapping "$T/map.tsv" \
+    --dry-run "$@" >>"$T/out" 2>"$T/err"
+}
+opsync_dry() { opsync_run batch "$@"; }
+opsync_gifail() {
+  reset
+  PATH="$BIN2:$PATH" FAKE_GI_SHAPE=batch FAKE_GI_FAIL=1 OP_SYNC_STATE="$T/opstate.log" \
+    "$ROOT/op-sync.sh" 1 --url http://op.invalid --token FAKE --mapping "$T/map.tsv" \
+    --dry-run >>"$T/out" 2>"$T/err"
+}
+
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): --dry-run with ticket context exits 0"
+opsync_dry && ok || bad
+DESC="comment: ticket summary joins the key, whitespace squeezed"; has 'DEMO-421 · Alpha data pipeline rollout'
+DESC="comment: ADF ticket description flattened to prose";  has 'Ticket: Scope of Work the targets are the staging endpoints and were tested during business hours only'
+DESC="comment: human duration, date and author";            has 'Logged: 1h 30m on 2026-09-29 by Ada Lovelace'
+DESC="comment: the Jira worklog note is carried over";      has 'Worklog: #demo mapped the report findings to the child tickets'
+DESC="comment: full Jira issue link kept";                  has 'Jira: https://jira[.]test[.]example/browse/DEMO-421'
+DESC="comment: sync marker kept last for tracing";          has '^        [|] sync:jira-worklog-73681'
+DESC="comment: the POSTed payload carries the same text";   has '"raw":"DEMO-421 · Alpha data pipeline rollout'
+DESC="readability: the comment style is announced";         warns 'OP comment style: full'
+RUNS=$((RUNS+1)); DESC="comment: an ok:false batch item is skipped, not fatal"
+grep -Eq 'ticket context came back' "$T/err" && bad || ok
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): a one-key answer (bare .data array) still yields context"
+opsync_run single && ok || bad
+DESC="single-shape: description read from the array answer"; has 'Ticket: the targets are the staging endpoints and were tested during business hours only'
+DESC="single-shape: summary used";                           has 'DEMO-421 · Alpha data pipeline'
+RUNS=$((RUNS+1)); DESC="single-shape: no ticket-context failure warning on stderr"
+grep -Eq 'ticket context (unavailable|came back)' "$T/err" && bad || ok
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): --comment-detail plain is the machine one-liner"
+opsync_dry --comment-detail plain && ok || bad
+DESC="plain: marker + link only";                            has 'sync:jira-worklog-73681 — https://jira[.]test[.]example/browse/DEMO-421 [(]op-sync[)]'
+DESC="plain: no ticket description";                         hasnt 'Ticket: Scope of Work'
+DESC="plain: no worklog line";                               hasnt 'Worklog: #demo'
+RUNS=$((RUNS+1)); DESC="plain: skips the ticket-context read entirely"
+grep -Eq 'OP comment style' "$T/err" && bad || ok
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): --comment-detail brief keeps everything but the description"
+opsync_dry --comment-detail brief && ok || bad
+DESC="brief: summary kept";                                  has 'DEMO-421 · Alpha data pipeline'
+DESC="brief: description dropped";                           hasnt 'Ticket: Scope of Work'
+DESC="brief: worklog note kept";                             has 'Worklog: #demo'
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): --comment-max clips long lines with an ellipsis"
+opsync_dry --comment-max 40 && ok || bad
+DESC="clip: description cut at 40 chars";                    has 'Ticket: Scope of Work the targets are the stagi…'
+DESC="clip: the marker line is never clipped";               has 'sync:jira-worklog-73681'
+
+RUNS=$((RUNS+1)); DESC="op-sync(fake): a failed ticket read degrades, never blocks"
+opsync_gifail && ok || bad
+DESC="degrade: warns that context is unavailable";           warns 'ticket context unavailable'
+DESC="degrade: worklog note still written";                  has 'Worklog: #demo'
+DESC="degrade: marker + link survive";                       has 'sync:jira-worklog-73681'
+
+RUNS=$((RUNS+1)); DESC="op-sync --comment-detail bogus is rejected"
+opsync_dry --comment-detail bogus && bad || ok
+DESC="bogus mode: names the accepted ones";                  warns 'must be full[|]brief[|]plain'
+RUNS=$((RUNS+1)); DESC="op-sync --comment-max 10 is rejected"
+opsync_dry --comment-max 10 && bad || ok
+DESC="tiny max: explains the floor";                         warns 'must be an integer >= 40'
+
+RUNS=$((RUNS+1)); DESC="op-sync --help documents --comment-detail"
+check bash -c "'$ROOT/op-sync.sh' --help | grep -q -- '--comment-detail'"
+RUNS=$((RUNS+1)); DESC="op-sync --help documents --comment-max"
+check bash -c "'$ROOT/op-sync.sh' --help | grep -q -- '--comment-max'"
+RUNS=$((RUNS+1)); DESC="worklog-run --help documents --comment-detail"
+check bash -c "'$WR' --help | grep -q -- '--comment-detail'"
+RUNS=$((RUNS+1)); DESC="worklog-run --help documents --comment-max"
+check bash -c "'$WR' --help | grep -q -- '--comment-max'"
+reset
+else
+  echo "  skip jq not installed"
+fi
+
 echo ""
 echo "== smoke: $RUNS checks, $FAILS failed =="
 [[ $FAILS -eq 0 ]] || exit 1
-

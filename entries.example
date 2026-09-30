@@ -19,6 +19,10 @@
 # OpenProject activity ids differ per instance — list yours with
 # `op-sync --list-activities` (or check the OP Time & costs dropdown).
 #
+# The mirrored OpenProject entry gets a readable comment built from the ticket
+# summary + description and the COMMENT you write here. Tune it with
+# `worklog-run --comment-detail full|brief|plain` / `--comment-max N`.
+#
 # --- examples ----------------------------------------------------------------
 #   DEMO-421 1h Today op:65:Support #data architecture
 #   SAMPLE-10516 2h Yesterday op:448:Testing UAT round 2
