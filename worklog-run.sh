@@ -47,6 +47,9 @@
 #   --notify-false   suppress Jira notifications (forwarded to worklog-add.sh)
 #   --author EMAIL   only sync this OP author   (forwarded to op-sync.sh)
 #   --auto-lookup    resolve unmapped WP ids by OP subject search (op-sync.sh)
+#   --list-wps [N]   list OpenProject work packages (ids to use in op: tags)
+#                    and exit — no entries file needed (forwarded to op-sync)
+#   --wp-filter STR  with --list-wps: only WPs whose subject contains STR
 #   --url URL        override OP_BASE_URL       (forwarded to op-sync.sh)
 #   --token TOK      override OP_TOKEN          (forwarded to op-sync.sh)
 #   -h, --help       show this help
@@ -74,6 +77,7 @@ usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
 FILE="${WORKLOG_ENTRIES:-}"; WEEKS=1
 DRY=0; YES=0; FORCE=0; JIRA_ONLY=0; OP_ONLY=0; PRINT_MAP=0
 AUTOLOOK=0; AUTHOR=""; OPURL=""; OPTOK=""
+LISTWPS=0; LISTN=""; WPFILT=""
 ADD_EXTRA=()          # options forwarded verbatim to worklog-add.sh
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +93,9 @@ while [[ $# -gt 0 ]]; do
     --notify-false) ADD_EXTRA+=("$1"); shift;;
     --author)       AUTHOR="$2"; shift 2;;
     --auto-lookup)  AUTOLOOK=1; shift;;
+    --list-wps)     LISTWPS=1
+                    if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
+    --wp-filter)    WPFILT="$2"; shift 2;;
     --url)          OPURL="$2"; shift 2;;
     --token)        OPTOK="$2"; shift 2;;
     -h|--help)      usage; exit 0;;
@@ -96,6 +103,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$WEEKS" =~ ^[0-9]+$ && "$WEEKS" -ge 1 ]] || { echo "--weeks must be a positive integer" >&2; exit 1; }
+
+# ---- list mode: browse OpenProject work packages, then exit ---------------------
+# Runs before entries-file resolution: choosing a WP id should work even in a
+# fresh folder with no entries file yet. Credentials/URL flags are forwarded.
+if [[ $LISTWPS -eq 1 ]]; then
+  SYNC_BIN="$(locate_tool op-sync.sh)" || exit 1
+  S=(--list-wps)
+  [[ -n "$LISTN"  ]] && S+=("$LISTN")
+  [[ -n "$WPFILT" ]] && S+=(--wp-filter "$WPFILT")
+  [[ -n "$OPURL"  ]] && S+=(--url "$OPURL")
+  [[ -n "$OPTOK"  ]] && S+=(--token "$OPTOK")
+  exec "$SYNC_BIN" "${S[@]}"
+fi
+
 # ---- entries file resolution ---------------------------------------------------
 # Order: -f FILE  >  $WORKLOG_ENTRIES  >  ./entries (cwd)  >  ~/.config/worklog/
 # entries  >  the legacy copy next to this script. The cwd/home defaults are what

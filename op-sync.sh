@@ -24,6 +24,11 @@
 #                   OP >=13) or 'legacy' (hours/spentOn, OP <=12).
 #                   Default: auto — read /time_entries/schema and pick one.
 #                   Override with env OP_TE_STYLE=modern|legacy.
+#   --list-wps [N]  List OpenProject work packages (up to N, default 25,
+#                   sorted by id) and exit — use the ids in op: tags or in
+#                   the mapping file. Needs credentials only: no twg, no
+#                   mapping file, no Jira read.
+#   --wp-filter STR With --list-wps: only packages whose subject contains STR
 #   -h, --help      Show this help
 #
 # Debugging: OP_DEBUG=1 logs the target URL and per-entry failures; the API
@@ -48,14 +53,16 @@ elif [[ -x "$HOME/.local/bin/twg" ]]; then TWG="$HOME/.local/bin/twg"
 else TWG=""; fi
 require_twg() { [[ -n "$TWG" ]] || { echo "twg not found on PATH or ~/.local/bin" >&2; exit 1; }; }
 
-usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Never echo the token: it is a credential and this script's stdout gets pasted
 # into tickets/logs. Set OP_DEBUG=1 for verbose diagnostics on stderr.
 op_debug() { { [[ "${OP_DEBUG:-0}" == "1" ]] && printf '  [debug] %s\n' "$*"; } 1>&2 || true; }
 
-WEEKS="${1:-1}"; if [[ $# -gt 0 && "$1" != -* ]]; then shift; fi
-case "$WEEKS" in -h|--help) usage; exit 0;; esac
+# Positional WEEKS only counts when it is actually a number — that way an
+# options-only invocation (e.g. `op-sync --list-wps`) does not mistake the
+# first flag for the week count.
+WEEKS=1; if [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; then WEEKS="$1"; shift; fi
 [[ "$WEEKS" =~ ^[0-9]+$ && "$WEEKS" -ge 1 ]] || { echo "WEEKS must be a positive integer" >&2; exit 1; }
 
 URL="${OP_BASE_URL:-}"; TOK="${OP_TOKEN:-}"
@@ -63,6 +70,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MAPPING="$HERE/op-mapping.tsv"
 STATE="${OP_SYNC_STATE:-$HOME/.config/op-sync/synced.log}"
 AUTO=0; DRY=0; AUTHOR=""; TESTYLE="${OP_TE_STYLE:-auto}"
+LISTWPS=0; LISTN=25; WPFILT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url)         URL="$2"; shift 2;;
@@ -72,6 +80,9 @@ while [[ $# -gt 0 ]]; do
     --author)      AUTHOR="$2"; shift 2;;
     --api-style)   TESTYLE="$2"; shift 2;;
     --dry-run)     DRY=1; shift;;
+    --list-wps)    LISTWPS=1
+                   if [[ ${2:-} =~ ^[0-9]+$ ]]; then LISTN="$2"; shift 2; else shift; fi;;
+    --wp-filter)   WPFILT="$2"; shift 2;;
     -h|--help)     usage; exit 0;;
     *)             echo "unknown option: $1" >&2; exit 1;;
   esac
@@ -87,10 +98,12 @@ if ! printf '%s' "$tok_decoded" | grep -qE '^[A-Za-z0-9@._%+-]+:[A-Za-z0-9]+$'; 
   op_debug "raw API token detected -> encoded as Basic base64(apikey:<token>)"
 fi
 op_debug "url: $URL"
-[[ -f "$MAPPING" ]] || { echo "mapping file not found: $MAPPING (create TSV: KEY<TAB>wp_id)" >&2; exit 1; }
-require_twg   # every non-help path reads Jira
-mkdir -p "$(dirname "$STATE")"; touch "$STATE"
 for dep in jq curl; do command -v "$dep" >/dev/null 2>&1 || { echo "missing dep: $dep" >&2; exit 1; }; done
+if [[ $LISTWPS -eq 0 ]]; then
+  [[ -f "$MAPPING" ]] || { echo "mapping file not found: $MAPPING (create TSV: KEY<TAB>wp_id)" >&2; exit 1; }
+  require_twg   # every non-help, non-list path reads Jira
+  mkdir -p "$(dirname "$STATE")"; touch "$STATE"
+fi
 
 DAYS=$(( WEEKS * 7 ))
 CUTOFF_MS=$(( ( $(date +%s) - DAYS * 86400 ) * 1000 ))
@@ -227,6 +240,42 @@ if [[ -z "$ME_LOGIN" ]]; then
   exit 1
 fi
 echo "  authenticated as: $ME_LOGIN" >&2
+
+# ---- list mode: browse work packages to pick ids for op: tags / mapping -------
+if [[ $LISTWPS -eq 1 ]]; then
+  [[ "$LISTN" =~ ^[0-9]+$ && "$LISTN" -ge 1 ]] || { echo "--list-wps count must be a positive integer" >&2; exit 1; }
+  Q="&sortBy=$(jq -rn --argjson s '[["id","asc"]]' '$s|@uri')"
+  if [[ -n "$WPFILT" ]]; then
+    fjson=$(jq -nc --arg s "$WPFILT" '[{"subject":{"operator":"~","values":[$s]}}]')
+    Q="$Q&filters=$(jq -rn --argjson f "$fjson" '$f|@uri')"
+  fi
+  echo "== OpenProject work packages$([[ -n "$WPFILT" ]] && printf " matching '%s'" "$WPFILT") — up to $LISTN, sorted by id =="
+  ROWS="$(mktemp /tmp/ops.wps.XXXXXX)"; GOT=0; PAGE=1
+  while (( GOT < LISTN )); do
+    WANT=$(( LISTN - GOT )); (( WANT > 100 )) && WANT=100
+    RESP="$(op_get "/work_packages?pageSize=$WANT&page=$PAGE$Q")"
+    if ! printf '%s' "$RESP" | jq -e 'has("_embedded") and (._embedded.elements | type == "array")' >/dev/null 2>&1; then
+      DETAIL="$(printf '%s' "$RESP" | jq -r '[._embedded.errors[]? | "\(.message // .errorIdentifier)[\(.details.attribute // "?")]"] | join("; ")' 2>/dev/null || true)"
+      echo "  ✗ could not list work packages: ${DETAIL:-unexpected response (check URL/token and the work_packages read scope)}" >&2
+      op_debug "response: ${RESP:0:400}"
+      rm -f "$ROWS"; exit 2
+    fi
+    N="$(printf '%s' "$RESP" | jq -r '._embedded.elements | length')"
+    (( N == 0 )) && break
+    printf '%s' "$RESP" | jq -r '._embedded.elements[] | [(.id|tostring), (.subject // "")] | @tsv' >> "$ROWS"
+    GOT=$(( GOT + N )); PAGE=$(( PAGE + 1 ))
+  done
+  if (( GOT == 0 )); then
+    echo "  (no work packages found$([[ -n "$WPFILT" ]] && printf " matching '%s'" "$WPFILT"))" >&2
+    [[ -n "$WPFILT" ]] && echo "   tip: broaden --wp-filter, or list everything with a bare --list-wps" >&2
+  else
+    { printf 'WP_ID\tSUBJECT\n'; head -n "$LISTN" "$ROWS"; } | column -t -s $'\t'
+    echo ""
+    echo "  Use a WP_ID in entries lines:  KEY 1h Today op:<WP_ID>[:<activity>]  (see worklog-run --help)"
+  fi
+  rm -f "$ROWS"
+  exit 0
+fi
 
 # ---- API dialect -------------------------------------------------------------
 # OpenProject renamed the time-entry fields: 'hours' -> 'duration' and

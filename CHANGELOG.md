@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Work-package discovery: `op-sync --list-wps [N]` (default 25) lists OpenProject
+  work packages as a `WP_ID  SUBJECT` table so you can pick ids for `op:` tags —
+  no `twg`, no mapping file, credentials only. `--wp-filter STR` narrows the
+  list to packages whose subject contains STR. `worklog-run --list-wps [N]
+  [--wp-filter STR]` forwards the same (works even without an entries file).
+
+### Fixed
+- `op-sync` positional `WEEKS` is now only consumed when it is actually a
+  number, so options-only invocations (`op-sync --url … --list-wps`) work.
+
 ## [1.0.3] - 2026-09-30
 
 ### Changed

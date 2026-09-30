@@ -28,6 +28,27 @@ DESC="worklog-add.sh --help";  check "$ROOT/worklog-add.sh" --help
 DESC="worklog-summary.sh --help"; check "$ROOT/worklog-summary.sh" --help
 DESC="op-sync.sh --help";      check "$ROOT/op-sync.sh" --help
 
+# ---- 1b. work-package listing (--list-wps) guards ------------------------------
+# Runs without any OpenProject access: the flag must appear in both help texts,
+# and list mode without credentials must fail with the credentials hint —
+# BEFORE any twg/mapping requirement (list mode needs neither).
+echo "== list-wps =="
+reset
+RUNS=$((RUNS+1)); DESC="worklog-run --help lists --list-wps"; check bash -c "'$WR' --help | grep -q -- '--list-wps'"
+reset
+RUNS=$((RUNS+1)); DESC="op-sync --help lists --list-wps and --wp-filter"
+check bash -c "'$ROOT/op-sync.sh' --help | grep -- '--list-wps' | grep -q -- '--wp-filter'"
+RUNS=$((RUNS+1)); DESC="op-sync --list-wps without credentials fails"
+env -u OP_BASE_URL -u OP_TOKEN "$ROOT/op-sync.sh" --list-wps >>"$T/out" 2>"$T/err" && bad || ok
+DESC="list-wps: credentials hint on stderr"; warns 'need --url/--token'
+DESC="list-wps: list mode never requires twg"; hasnt 'twg not found'
+DESC="list-wps: list mode never requires the mapping file"; hasnt 'mapping file not found'
+RUNS=$((RUNS+1)); DESC="worklog-run --list-wps without credentials fails (no entries file needed)"
+(cd "$T" && env -u OP_BASE_URL -u OP_TOKEN -u WORKLOG_ENTRIES "$WR" --list-wps 5) \
+  >>"$T/out" 2>"$T/err" && bad || ok
+DESC="worklog-run list-wps: forwarded credentials hint"; warns 'need --url/--token'
+reset
+
 # ---- 2. entry grammar + op: tag extraction -------------------------------------
 echo "== grammar / print-map =="
 cat > "$T/entries" <<'EOF'

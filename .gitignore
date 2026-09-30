@@ -7,3 +7,4 @@ op-mapping.tsv
 .DS_Store
 *.bak
 tmp/
+.vscode
