@@ -9,8 +9,11 @@
 #
 # Options:
 #   --identifier X   Scope to another user (repeatable; AAID or IdentityUser ARI)
-#   --items N        Max hydrated items per section (default: 10)
-#   --max-issues N   Max issues to pull worklogs for (default: 15)
+#   --items N        Max hydrated items per TWG section (default: 100)
+#   --max-issues N   Rows to keep: the N issues with the LATEST `updated` (default: 15)
+#   --order KEY      Row order + which issues survive --max-issues:
+#                      recency = latest updated first (default)
+#                      alpha   = A-Z issue key (legacy behaviour)
 #   --date-columns N Max dated columns in the evidence table (default: 10; 0 = all)
 #   --all-time       (kept for compatibility, now a no-op) — a column per dated log is
 #                    the default: worklogs are fetched for every date ever logged
@@ -42,7 +45,8 @@ WEEKS="${1:-1}"; if [[ $# -gt 0 ]]; then shift; fi
 case "$WEEKS" in -h|--help) usage; exit 0;; esac
 [[ "$WEEKS" =~ ^[0-9]+$ && "$WEEKS" -ge 1 ]] || { echo "WEEKS must be a positive integer" >&2; exit 1; }
 
-SCOPE="me"; IDENT=(); ITEMS=10; MAXKEYS=15; OUT=""
+SCOPE="me"; IDENT=(); ITEMS=100; MAXKEYS=15; OUT=""
+ORDER="recency"; HYDRATE_CAP=200   # ceiling on batched `workitem get`, not on report rows
 DATE_COLS=10; WL_PAGE=200
 SITE_URL="${TWG_SITE_URL:-https://jira.example.com}"   # override via env for other sites
 while [[ $# -gt 0 ]]; do
@@ -50,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --identifier)   SCOPE="user"; IDENT+=(--identifier "$2"); shift 2;;
     --items)        ITEMS="$2"; shift 2;;
     --max-issues)   MAXKEYS="$2"; shift 2;;
+    --order)        ORDER="$2"; shift 2;;
     --date-columns) DATE_COLS="$2"; shift 2;;
     --all-time)     shift;;  # no-op: every dated log already gets a column
     -o)             OUT="$2"; shift 2;;
@@ -61,6 +66,7 @@ done
 [[ "$DATE_COLS" =~ ^[0-9]+$ ]] || { echo "--date-columns must be a non-negative integer" >&2; exit 1; }
 [[ "$MAXKEYS" =~ ^[0-9]+$ && "$MAXKEYS" -ge 1 ]] || { echo "--max-issues must be a positive integer" >&2; exit 1; }
 [[ "$ITEMS" =~ ^[0-9]+$ ]] || { echo "--items must be a non-negative integer" >&2; exit 1; }
+case "$ORDER" in recency|alpha) ;; *) echo "--order must be 'recency' or 'alpha'" >&2; exit 1;; esac
 
 DAYS=$(( WEEKS * 7 ))
 WINSTART="$(date -v-"${DAYS}"d +%Y-%m-%d 2>/dev/null || date -d "-${DAYS} days" +%Y-%m-%d)"
@@ -134,10 +140,15 @@ COUNTS="$(jq -r '[.data.counts.sections // {} | to_entries[]
 
 # ---- 2. issue keys: explicit items + any referenced in comment URLs ----------
 # `|| true` keeps a "no activity yet" (empty grep) run alive under pipefail.
+# NOTE: no --max-issues cut here. Truncating the key list *before* hydration silently
+# drops the least-recently-touched tickets (a ticket can hold worklogs and still never
+# appear). Every candidate is hydrated first; rows are ordered and cut in step 2c once
+# each issue's real `updated` timestamp is known. HYDRATE_CAP only guards against a
+# pathological candidate set.
 KEYS="$( { jq -r '.data.items.sections.issues[]?.key // empty' "$WQ" 2>/dev/null
           jq -r '.data.items.sections.comments[]?.webUrl // empty' "$WQ" 2>/dev/null \
             | sed -nE 's|.*/browse/([A-Z][A-Z0-9]+-[0-9]+).*|\1|p'
-        } | grep -E '^[A-Z][A-Z0-9]+-[0-9]+$' | sort -u | head -n "$MAXKEYS" || true )"
+        } | grep -E '^[A-Z][A-Z0-9]+-[0-9]+$' | sort -u | head -n "$HYDRATE_CAP" || true )"
 
 # ---- 2b. batched workitem hydration ------------------------------------------
 GI=""
@@ -167,6 +178,41 @@ if [[ -n "$GI" && -f "$GI" ]]; then
         ((.resolutiondate // "") | tostring | split("T")[0]) ]
     | @tsv' "$GI" > "$ISSUE_META" 2>/dev/null || true
 fi
+
+# ---- 2c. order rows + apply the --max-issues cut -----------------------------
+# Now that every candidate carries a real `updated` timestamp, the cut keeps the
+# most-recently-touched tickets instead of the alphabetically-first ones.
+# ISSUE_META fields: 1 key | 2 summary | 3 status | 4 timespent | 5 created | 6 updated | 7 completed
+NCAND="$(awk 'END { print NR + 0 }' "$ISSUE_META")"
+if [[ -s "$ISSUE_META" ]]; then
+  if [[ "$ORDER" == "recency" ]]; then
+    # latest updated first; blank `updated` sinks to the bottom.
+    # Tie-break on lifetime logged time (field 4) so that, inside a date cluster of
+    # sibling tickets updated together, the ones that actually carry worklog entries
+    # win the row slots instead of an arbitrary key order.
+    sort -t $'\t' -k6,6r -k4,4nr -k5,5r -k1,1 "$ISSUE_META" > "${ISSUE_META}.sorted"
+  else
+    sort -t $'\t' -k1,1 "$ISSUE_META" > "${ISSUE_META}.sorted"
+  fi
+  head -n "$MAXKEYS" "${ISSUE_META}.sorted" > "${ISSUE_META}.cut" && mv "${ISSUE_META}.cut" "$ISSUE_META"
+  rm -f "${ISSUE_META}.sorted"
+  KEYS="$(awk -F'\t' '{ print $1 }' "$ISSUE_META")"
+elif [[ -n "$KEYS" ]]; then
+  # hydration returned nothing usable — fall back to the legacy A-Z cut
+  KEYS="$(printf '%s\n' "$KEYS" | head -n "$MAXKEYS")"
+fi
+NRETAINED="$(awk 'END { print NR + 0 }' "$ISSUE_META")"
+if [[ "$ORDER" == "alpha" ]]; then
+  ORDER_NOTE="Rows ordered by issue key (A-Z)"
+else
+  ORDER_NOTE="Rows ordered by latest \`updated\` first (logged time breaks ties)"
+fi
+if (( NCAND > NRETAINED )); then
+  ORDER_NOTE+=" — showing ${NRETAINED} of ${NCAND} issue(s) with activity in window (cut by \`--max-issues ${MAXKEYS}\`)"
+else
+  ORDER_NOTE+=" — all ${NCAND} issue(s) with activity in window"
+fi
+ORDER_NOTE+="."
 
 # ---- 3. per-issue worklogs, one row per (issue, date) entry -------------------
 echo ">>> worklog query per issue (dated entries) ..." >&2
@@ -246,6 +292,7 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   echo "## 📖 Standup summary"
   echo ""
   echo "- **Activity in window:** ${COUNTS}"
+  echo "- **Issue rows:** ${ORDER_NOTE}"
   echo "- **Time logged (Jira worklogs, in window):** $(fmt_dur "$TOTAL_SECS") across ${NTRACKED} tracked issue(s)."
   if (( NDATES > 0 )); then
     plural="entries"; [[ "$NWL" == 1 ]] && plural="entry"
@@ -324,6 +371,10 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   else
     echo "_No Jira issues matched in this window._"
   fi
+  if [[ -s "$ISSUE_META" ]]; then
+    echo ""
+    echo "_${ORDER_NOTE}_"
+  fi
   if (( NDATES > 0 )); then
     echo ""
     echo "_${DAILY_NOTE}_"
@@ -342,6 +393,9 @@ NDONE="$(awk -F'\t' -v w="$WINSTART" '$7 != "" && $7 >= w {printf "%s ", $1}' "$
   echo "## Confidence & coverage"
   echo ""
   echo "- Issue/comment counts come from the Teamwork Graph (\`coverage: partial\`); zero PR/meeting rows may mean *unindexed*, not *unworked*."
+  if (( NCAND > NRETAINED )); then
+    echo "- ⚠️ **Row cut:** only the ${NRETAINED} most recently updated of ${NCAND} issues are shown (and worklogs are fetched for those only), so totals here understate the window. Raise \`--max-issues\` to ${NCAND} (or add \`--order alpha\` for A-Z rows) for complete totals."
+  fi
   echo "- 'Logged (all-time)' is Jira native \`timespent\`; Tempo or other timers are not included."
   echo "- Dated columns come from each worklog entry's \`started\` timestamp, so an entry added today or yesterday lands in its own column."
   if (( DATE_COLS > 0 )); then

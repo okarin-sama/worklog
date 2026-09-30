@@ -4,7 +4,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026-09-30
+## [1.2.0] - 2026-09-30
+
+### Added
+- `worklog-summary --order recency|alpha`: evidence-table rows are now ordered by
+  latest Jira `updated` (default), with lifetime logged time as the tie-break, and
+  the `--max-issues` cut keeps the *most recently touched* issues instead of the
+  alphabetically first ones. `--order alpha` restores the previous A-Z behaviour.
+- Each report states its own truncation: an `Issue rows:` standup bullet, the same
+  note under the evidence table, and a ⚠️ **Row cut** coverage bullet that appears
+  only when issues were actually dropped.
+
+### Fixed
+- `worklog-summary` silently omitted issues that carry real worklogs but rank low in
+  the Teamwork Graph or sort late by key. The key list was cut to `--max-issues`
+  *before* hydration, and the per-section cap (`--items`, previously 10) was smaller
+  than the number of matched issues — so a low-ranked ticket could never appear,
+  however long its window or how much time it held. Hydration is batched and cheap
+  (~1s for 40 issues), so all candidates are now fetched, ordered and cut once each
+  issue's `updated` timestamp is known.
+
+### Changed
+- `worklog-summary --items` default 10 → 100, so candidates survive long enough to be
+  ordered. The number of *rows* is still governed by `--max-issues` (default 15): any
+  such cut is lossy, and a recency-ordered one keeps different issues than the old
+  alphabetical one did. Raise `--max-issues` to the full candidate count for complete
+  logged totals — the report now says exactly how many issues were cut.
+
 
 ### Added
 - Work-package discovery: `op-sync --list-wps [N]` (default 25) lists OpenProject
