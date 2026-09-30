@@ -90,18 +90,26 @@ Add a `CHANGELOG.md` entry under "Unreleased" in every PR.
 
 ## Releases & the Homebrew tap
 
-Releases are tag-driven; the tap must follow every tag:
+The source repo is private and Homebrew will not authenticate private
+*formula downloads* — so the release tarball is **vendored into the tap**
+(`okarin-sama/homebrew-tap/dist/`). One release = one tag + one tap commit:
 
 ```bash
 # 1. bump CHANGELOG (Unreleased -> [x.y.z]) and commit
-git tag v1.1.0 && git push origin v1.1.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 
-# 2. update the tap formula in okarin-sama/homebrew-tap:
-curl -sL https://github.com/okarin-sama/worklog/archive/refs/tags/v1.1.0.tar.gz | shasum -a 256
-#    -> edit Formula/worklog.rb: url tag + sha256, then push
+# 2. build + hash the exact archive of that tag
+curl -sL -H "Authorization: Bearer $(gh auth token)" \
+  -o ~/repos/homebrew-tap/dist/worklog-X.Y.Z.tar.gz \
+  https://github.com/okarin-sama/worklog/archive/refs/tags/vX.Y.Z.tar.gz
+shasum -a 256 ~/repos/homebrew-tap/dist/worklog-X.Y.Z.tar.gz
 
-# 3. verify from a clean shell:
-brew update && brew upgrade worklog && worklog-run --print-map
+# 3. in the tap repo: update Formula/worklog.rb (url filename, version, sha256)
+#    rm the old dist/worklog-*.tar.gz, then
+brew style Formula/worklog.rb && git add -A && git commit && git push
+
+# 4. verify from a clean shell:
+brew update && brew upgrade worklog && brew test worklog && worklog-run --print-map
 ```
 
 Version numbers: breaking grammar/behaviour change → major; new flags/phases →

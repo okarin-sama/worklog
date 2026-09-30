@@ -79,13 +79,18 @@ brew-installed binary (which lives in `/opt/homebrew/bin`) usable from anywhere.
 
 ```bash
 brew tap okarin-sama/tap
+brew trust okarin-sama/tap     # one-time (brew >= 6 trust gate for third-party taps)
 brew install worklog
-brew info worklog        # shows setup caveats (twg, OP_TOKEN, WORKLOG_ENTRIES)
+brew info worklog              # shows setup caveats (twg, OP_TOKEN, WORKLOG_ENTRIES)
 ```
 
 This installs the commands `worklog-run`, `worklog-add`, `worklog-summary`,
-`op-sync` and seeds a sample at `$(brew --prefix)/share/worklog/entries.example`.
-The formula lives in the companion [homebrew-tap](https://github.com/okarin-sama/homebrew-tap) repo.
+`op-sync` plus a sample at `$(brew --prefix)/share/worklog/entries.example`.
+The source repo is private, so the formula downloads the release tarball
+**vendored in the tap** (`dist/`) — Homebrew cannot authenticate private
+formula downloads, hence this pattern. The formula lives in the companion
+[homebrew-tap](https://github.com/okarin-sama/homebrew-tap) repo; the
+tag-and-vendor release flow is in CONTRIBUTING below.
 
 ## The four commands
 
