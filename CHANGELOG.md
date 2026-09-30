@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-30
+
+### Fixed
+- `worklog-run` sibling-tool resolution: phase 1/2 now locate `worklog-add` and
+  `op-sync` as `$NAME.sh` (repo layout), extension-less `$NAME` (brew layout),
+  or on `PATH` — previously a brew-installed `worklog-run` failed phase 1 with
+  exit 127 because it hardcoded the `.sh` filenames.
+
 ## [1.0.0] - 2026-09-30
 
 ### Added

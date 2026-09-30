@@ -57,6 +57,18 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# Resolve a sibling tool across install layouts: a repo checkout keeps the .sh
+# filenames, a brew install strips them (bin/worklog-add, bin/op-sync), and PATH
+# is the last resort. Echoes an executable path or fails with a clear message.
+locate_tool() { # $1=basename with .sh
+  local s="$1"
+  [[ -x "$HERE/$s" ]] && { printf '%s' "$HERE/$s"; return 0; }
+  [[ -x "$HERE/${s%.sh}" ]] && { printf '%s' "$HERE/${s%.sh}"; return 0; }
+  command -v "${s%.sh}" 2>/dev/null && return 0
+  echo "cannot find ${s%.sh} (looked: $HERE/$s, $HERE/${s%.sh}, PATH)" >&2
+  return 1
+}
+
 usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
 
 FILE="${WORKLOG_ENTRIES:-}"; WEEKS=1
@@ -144,12 +156,13 @@ RC=0
 # ---- phase 1: Jira ---------------------------------------------------------------
 if [[ $OP_ONLY -eq 0 ]]; then
   echo "==> Phase 1/2 — Jira: logging untracked entries from $FILE"
+  ADD_BIN="$(locate_tool worklog-add.sh)" || exit 1
   A=(-f "$FILE")
   [[ $DRY   -eq 1 ]] && A+=(--dry-run)
   [[ $YES   -eq 1 ]] && A+=(--yes)
   [[ $FORCE -eq 1 ]] && A+=(--force)
   set +e
-  "$HERE/worklog-add.sh" "${A[@]}" ${ADD_EXTRA[@]+"${ADD_EXTRA[@]}"}
+  "$ADD_BIN" "${A[@]}" ${ADD_EXTRA[@]+"${ADD_EXTRA[@]}"}
   rc1=$?
   set -e
   if [[ $rc1 -ne 0 ]]; then
@@ -164,6 +177,7 @@ fi
 if [[ $JIRA_ONLY -eq 0 ]]; then
   if [[ -s "$MAP" ]]; then
     echo "==> Phase 2/2 — OpenProject: syncing mapped keys (${WEEKS} week window)"
+    SYNC_BIN="$(locate_tool op-sync.sh)" || exit 1
     S=("$WEEKS" --mapping "$MAP")
     [[ $DRY      -eq 1 ]] && S+=(--dry-run)
     [[ $AUTOLOOK -eq 1 ]] && S+=(--auto-lookup)
@@ -171,7 +185,7 @@ if [[ $JIRA_ONLY -eq 0 ]]; then
     [[ -n "$OPURL"  ]] && S+=(--url "$OPURL")
     [[ -n "$OPTOK"  ]] && S+=(--token "$OPTOK")
     set +e
-    "$HERE/op-sync.sh" "${S[@]}"
+    "$SYNC_BIN" "${S[@]}"
     rc2=$?
     set -e
     [[ $rc2 -ne 0 ]] && { echo "  ! phase 2 exited $rc2" >&2; RC=1; }
